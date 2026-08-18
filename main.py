@@ -179,8 +179,22 @@ async def inject_turnstile(tab, sitekey):
                     turnstile.render(el, {{
                         sitekey: {json.dumps(sitekey)},
                         callback: setToken,
-                        'error-callback': () => {{ window.__tsError = true; }}
+                        'error-callback': () => {{ window.__tsError = 'error-callback'; }}
                     }});
+                    setTimeout(() => {{
+                        if (!window.__tsToken) {{
+                            try {{
+                                turnstile.render(el, {{
+                                    sitekey: {json.dumps(sitekey)},
+                                    appearance: 'execute',
+                                    callback: setToken,
+                                    'error-callback': () => {{ window.__tsError = 'execute-error'; }}
+                                }});
+                            }} catch (e) {{
+                                window.__tsError = 'execute-exc: ' + String(e);
+                            }}
+                        }}
+                    }}, 4000);
                 }} catch (e) {{
                     window.__tsError = String(e);
                 }}
