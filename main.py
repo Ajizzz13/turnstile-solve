@@ -55,12 +55,25 @@ async def get_browser():
     async with _browser_lock:
         if _browser is None:
             exe_path = find_chrome_path()
-            _browser = await uc.start(
-                headless=True,
-                no_sandbox=True,
-                browser_executable_path=exe_path,
-                browser_args=BROWSER_ARGS,
-            )
+            try:
+                _browser = await uc.start(
+                    headless=True,
+                    no_sandbox=True,
+                    browser_executable_path=exe_path,
+                    browser_args=BROWSER_ARGS,
+                )
+            except Exception as e:
+                extra = ""
+                try:
+                    r = subprocess.run(
+                        [exe_path, "--headless", "--no-sandbox", "--disable-dev-shm-usage",
+                         "--enable-logging=stderr", "--dump-dom", "about:blank"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    extra = f"manual_rc={r.returncode} stderr={r.stderr[:400]}"
+                except Exception as e2:
+                    extra = f"manual_exc={str(e2)[:120]}"
+                raise RuntimeError(f"BrowserStartFailed: {str(e)[:120]} | {extra}")
     return _browser
 
 
