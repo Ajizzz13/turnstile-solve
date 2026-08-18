@@ -171,6 +171,26 @@ async def wait_turnstile_token(tab):
     return token
 
 
+async def wait_download_ready(tab, seconds=20):
+    for _ in range(int(seconds / 2)):
+        await asyncio.sleep(2)
+        try:
+            html = str(await tab.evaluate("document.documentElement.outerHTML"))[:300000]
+        except Exception:
+            html = ""
+        if 'id="download"' in html or "download/file/" in html:
+            return True, html
+    return False, html
+
+
+async def page_has_download(tab):
+    try:
+        html = str(await tab.evaluate("document.documentElement.outerHTML"))[:300000]
+    except Exception:
+        html = ""
+    return 'id="download"' in html or "download/file/" in html, html
+
+
 async def click_submit(tab):
     try:
         return await tab.evaluate("""(() => {
@@ -238,13 +258,7 @@ async def solve_flow(payload):
             has_submit = (await page_state(tab))["hasSubmit"]
             if has_submit:
                 submitted = await click_submit(tab)
-                await asyncio.sleep(POST_SETTLE_SECONDS)
-                html = ""
-                try:
-                    html = str(await tab.evaluate("document.documentElement.outerHTML"))[:300000]
-                except Exception:
-                    pass
-                has_download = 'id="download"' in html or "download/file/" in html
+                has_download, html = await wait_download_ready(tab)
                 if not has_download:
                     import re as _re
                     m = _re.search(r"<body[^>]*>(.{0,600})", html, _re.S)
@@ -253,12 +267,7 @@ async def solve_flow(payload):
                 token = await wait_turnstile_token(tab)
                 if token:
                     await click_submit(tab)
-                    await asyncio.sleep(POST_SETTLE_SECONDS)
-                    try:
-                        html = str(await tab.evaluate("document.documentElement.outerHTML"))[:300000]
-                    except Exception:
-                        html = ""
-                    has_download = 'id="download"' in html or "download/file/" in html
+                    has_download, html = await wait_download_ready(tab)
 
         user_agent = ""
         try:
