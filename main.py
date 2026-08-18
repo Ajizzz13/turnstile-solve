@@ -311,5 +311,14 @@ async def solve_url(payload: SolvePayload):
         except Exception as e:
             traceback.print_exc()
             await reset_browser()
+            err = str(e)
+            if "not found" in err or "Target" in err or "connection" in err.lower() or "websocket" in err.lower():
+                try:
+                    result = await asyncio.wait_for(solve_flow(payload), timeout=FLOW_TIMEOUT)
+                    return JSONResponse(status_code=200, content=result)
+                except asyncio.TimeoutError:
+                    return JSONResponse(status_code=200, content={"success": False, "error": "Operation timed out"})
+                except Exception as e2:
+                    return JSONResponse(status_code=200, content={"success": False, "error": str(e2)})
             # Status diubah ke 200 agar body JSON tidak dibajak Render/Cloudflare
-            return JSONResponse(status_code=200, content={"success": False, "error": str(e)})
+            return JSONResponse(status_code=200, content={"success": False, "error": err})
