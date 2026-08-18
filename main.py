@@ -455,6 +455,12 @@ async def _with_retry(fn):
 
 async def _run_probe(payload):
     browser = await get_browser()
+    cleared = False
+    try:
+        await browser.send(cdp.network.clear_browser_cookies())
+        cleared = True
+    except Exception as e:
+        cleared = str(e)[:200]
     tab = await browser.get(payload.url)
     try:
         title = await wait_cf_pass(tab)
@@ -503,8 +509,23 @@ async def _run_probe(payload):
             const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
             return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
         })())""")
-        state3 = json.loads(raw4) if raw4 else None
-        return {"success": True, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3}
+        await asyncio.sleep(6)
+        raw5 = await tab.evaluate("""JSON.stringify((() => {
+            const el = document.getElementById('recaptcha-element');
+            if (el) el.scrollIntoView({block:'center'});
+            return !!el;
+        })())""")
+        await asyncio.sleep(5)
+        raw6 = await tab.evaluate("""JSON.stringify((() => {
+            const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                const r = f.getBoundingClientRect();
+                return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
+            });
+            const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+            return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
+        })())""")
+        state4 = json.loads(raw6) if raw6 else None
+        return {"success": True, "cleared": cleared, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3, "state_after_scroll": state4}
     finally:
         try:
             await tab.close()
