@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import nodriver as uc
+from nodriver import cdp
 
 app = FastAPI()
 
@@ -238,8 +239,20 @@ async def collect_cookies(browser):
 
 async def solve_flow(payload: SolvePayload):
     browser = await get_browser()
-    tab = await browser.get(payload.url)
+    tab = await browser.get("about:blank")
     try:
+        try:
+            await tab.send(cdp.page.add_script_to_evaluate_on_new_document(
+                source="""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+                window.chrome = window.chrome || {runtime: {}};
+                """
+            ))
+        except Exception:
+            pass
+        await tab.get(payload.url)
         title = await wait_cf_pass(tab)
         if "Just a moment" in title or not title:
             raise RuntimeError("Gagal melewati halaman verifikasi awal Cloudflare (Just a moment...)")
