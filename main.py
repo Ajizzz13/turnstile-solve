@@ -233,6 +233,7 @@ async def solve_flow(payload):
         submitted = False
         has_download = False
         token = ""
+        post_hint = ""
         if payload.submit:
             has_submit = (await page_state(tab))["hasSubmit"]
             if has_submit:
@@ -244,8 +245,11 @@ async def solve_flow(payload):
                 except Exception:
                     pass
                 has_download = 'id="download"' in html or "download/file/" in html
+                if not has_download:
+                    import re as _re
+                    m = _re.search(r"<body[^>]*>(.{0,600})", html, _re.S)
+                    post_hint = _re.sub(r"<[^>]+>", " ", m.group(1) if m else html[:600]).strip()[:300]
             if submitted and not has_download and payload.sitekey:
-                await inject_turnstile(tab, payload.sitekey)
                 token = await wait_turnstile_token(tab)
                 if token:
                     await click_submit(tab)
@@ -288,6 +292,7 @@ async def solve_flow(payload):
             "widget_found": True,
             "submitted": submitted,
             "download_ready": has_download,
+            "post_hint": post_hint,
             "browser_mode": _browser_mode,
             "user_agent": user_agent,
             "cookies_count": len(cookies),
