@@ -10,6 +10,7 @@ app = FastAPI()
 _browser = None
 _browser_lock = asyncio.Lock()
 _solve_lock = asyncio.Lock()
+_browser_mode = "headful" if os.environ.get("HEADLESS", "1") != "1" else "headless"
 
 HEADLESS = os.environ.get("HEADLESS", "1") == "1"
 
@@ -39,14 +40,24 @@ class SolvePayload(BaseModel):
 
 
 async def get_browser():
-    global _browser
+    global _browser, _browser_mode
     async with _browser_lock:
         if _browser is None:
-            _browser = await uc.start(
-                headless=HEADLESS,
-                sandbox=False,
-                browser_args=BROWSER_ARGS,
-            )
+            try:
+                _browser = await uc.start(
+                    headless=_browser_mode == "headless",
+                    sandbox=False,
+                    browser_args=BROWSER_ARGS,
+                )
+            except Exception:
+                if _browser_mode == "headless":
+                    raise
+                _browser_mode = "headless"
+                _browser = await uc.start(
+                    headless=True,
+                    sandbox=False,
+                    browser_args=BROWSER_ARGS,
+                )
     return _browser
 
 
@@ -233,6 +244,7 @@ async def solve_flow(payload):
         "sitekey_used": payload.sitekey,
         "widget_found": widget_found,
         "submitted": submitted,
+        "browser_mode": _browser_mode,
         "cookies_count": len(cookies),
         "cookies": cookies,
         "netscape": netscape,
