@@ -1,8 +1,7 @@
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive \
-    HEADLESS=0
+    DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     wget \
@@ -39,17 +38,14 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
-    xvfb \
-    xauth \
-    libdrm2 \
-    libxkbcommon0 \
-    libpci3 \
     --no-install-recommends \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update \
     && apt-get install -y google-chrome-stable --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 appuser
 
 WORKDIR /app
 
@@ -58,4 +54,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD xvfb-run -a uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
+RUN chown -R appuser:appuser /app
+
+USER appuser
+ENV HOME=/home/appuser
+
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
