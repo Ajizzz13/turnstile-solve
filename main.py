@@ -1,5 +1,8 @@
 import asyncio
 import json
+import shutil
+import subprocess
+import traceback
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -17,6 +20,8 @@ BROWSER_ARGS = [
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
     "--window-size=1280,720",
 ]
 
@@ -32,16 +37,26 @@ class SolvePayload(BaseModel):
     submit: bool = True
 
 
+def find_chrome_path():
+    return (
+        shutil.which("google-chrome-stable")
+        or shutil.which("google-chrome")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or "/usr/bin/google-chrome-stable"
+    )
+
+
 async def get_browser():
     global _browser
     async with _browser_lock:
         if _browser is None:
-            config = uc.Config(
+            exe_path = find_chrome_path()
+            _browser = await uc.start(
                 headless=True,
-                sandbox=False,
+                browser_executable_path=exe_path,
                 browser_args=BROWSER_ARGS,
             )
-            _browser = await uc.start(config=config)
     return _browser
 
 
@@ -258,15 +273,30 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/diag")
+async def diag():
+    exe = find_chrome_path()
+    result = {"exe": exe}
+    if exe:
+        try:
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
+            result["version"] = r.stdout.strip() or r.stderr.strip()
+        except Exception as e:
+            result["version_error"] = str(e)
+    return result
+
+
 @app.post("/api/solve")
 async def solve_url(payload: SolvePayload):
     async with _solve_lock:
         try:
             result = await asyncio.wait_for(solve_flow(payload), timeout=FLOW_TIMEOUT)
-            return JSONResponse(content=result)
+            return JSONResponse(status_code=200, content=result)
         except asyncio.TimeoutError:
+            print("ERROR: solve_url timed out", flush=True)
             await reset_browser()
             return JSONResponse(status_code=504, content={"success": False, "error": "Operation timed out"})
         except Exception as e:
+            traceback.print_exc()
             await reset_browser()
             return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
