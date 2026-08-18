@@ -4,6 +4,7 @@ import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 import nodriver as uc
+from nodriver import cdp
 
 app = FastAPI()
 
@@ -244,6 +245,10 @@ async def collect_cookies(browser):
 
 async def solve_flow(payload):
     browser = await get_browser()
+    try:
+        await browser.send(cdp.network.clear_browser_cookies())
+    except Exception:
+        pass
     tab = await browser.get(payload.url)
     try:
         title = await wait_cf_pass(tab)
