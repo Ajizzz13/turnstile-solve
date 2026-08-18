@@ -358,6 +358,31 @@ async def diag():
     except Exception as e:
         result["uc_start"] = "failed"
         result["uc_start_error"] = str(e)[:1000]
+
+    import subprocess as sp
+
+    async def try_mode(label, headless):
+        try:
+            b = await asyncio.wait_for(
+                uc.start(headless=headless, sandbox=False, browser_args=BROWSER_ARGS), timeout=45
+            )
+            result[label] = "ok"
+            try:
+                await b.stop()
+            except Exception:
+                pass
+        except Exception as e:
+            result[label] = "failed"
+            result[label + "_error"] = str(e)[:400]
+
+    await try_mode("chain_headful", False)
+    await try_mode("chain_headless", True)
+    await try_mode("chain_headless2", True)
+
+    try:
+        sp.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=10)
+    except Exception:
+        pass
     return result
 
 
