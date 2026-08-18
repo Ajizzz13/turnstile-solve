@@ -16,7 +16,7 @@ _browser = None
 _browser_lock = asyncio.Lock()
 _solve_lock = asyncio.Lock()
 
-HEADLESS = os.environ.get("HEADLESS", "0") == "1"
+HEADLESS = os.environ.get("HEADLESS", "1") == "1"
 
 
 BROWSER_ARGS = [
