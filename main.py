@@ -18,6 +18,7 @@ async def resolve_url(payload: URLPayload):
     try:
         browser = await uc.start(
             headless=True,
+            sandbox=False,
             browser_args=[
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
