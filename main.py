@@ -435,7 +435,33 @@ async def probe_url(payload: URLPayload):
                     return {iframes: ifs, inputs, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha};
                 })())""")
                 state2 = json.loads(raw2) if raw2 else None
-                return {"success": True, "state": state, "state_after4s": state2}
+                manual = None
+                try:
+                    raw3 = await tab.evaluate("""JSON.stringify((() => {
+                        const el = document.getElementById('recaptcha-element');
+                        if (!el) return {error: 'no element'};
+                        if (typeof window.turnstile === 'undefined') return {error: 'no turnstile api'};
+                        window.__pToken = '';
+                        const key = el.getAttribute('data-sitekey') || '';
+                        try {
+                            window.turnstile.render(el, {sitekey: key, callback: (t) => { window.__pToken = t; }});
+                            return {rendered: true, key};
+                        } catch (e) { return {rendered: false, err: String(e).slice(0,200)}; }
+                    })())""")
+                    manual = json.loads(raw3) if raw3 else None
+                except Exception:
+                    pass
+                await asyncio.sleep(6)
+                raw4 = await tab.evaluate("""JSON.stringify((() => {
+                    const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                        const r = f.getBoundingClientRect();
+                        return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
+                    });
+                    const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+                    return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
+                })())""")
+                state3 = json.loads(raw4) if raw4 else None
+                return {"success": True, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3}
             finally:
                 try:
                     await tab.close()
