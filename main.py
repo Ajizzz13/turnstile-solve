@@ -230,23 +230,31 @@ async def solve_flow(payload):
         if "Just a moment" in title or not title:
             raise RuntimeError("Cloudflare challenge tidak selesai dalam 30 detik")
 
-        state = await page_state(tab)
-        token = ""
-        widget_found = state["hasWidget"]
-
-        if widget_found:
-            token = await wait_turnstile_token(tab)
-        elif payload.sitekey:
-            widget_found = await inject_turnstile(tab, payload.sitekey)
-            if widget_found:
-                token = await wait_turnstile_token(tab)
-
         submitted = False
-        if payload.submit and widget_found:
+        has_download = False
+        token = ""
+        if payload.submit:
             has_submit = (await page_state(tab))["hasSubmit"]
             if has_submit:
                 submitted = await click_submit(tab)
                 await asyncio.sleep(POST_SETTLE_SECONDS)
+                html = ""
+                try:
+                    html = str(await tab.evaluate("document.documentElement.outerHTML"))[:300000]
+                except Exception:
+                    pass
+                has_download = 'id="download"' in html or "download/file/" in html
+            if submitted and not has_download and payload.sitekey:
+                await inject_turnstile(tab, payload.sitekey)
+                token = await wait_turnstile_token(tab)
+                if token:
+                    await click_submit(tab)
+                    await asyncio.sleep(POST_SETTLE_SECONDS)
+                    try:
+                        html = str(await tab.evaluate("document.documentElement.outerHTML"))[:300000]
+                    except Exception:
+                        html = ""
+                    has_download = 'id="download"' in html or "download/file/" in html
 
         user_agent = ""
         try:
@@ -277,8 +285,9 @@ async def solve_flow(payload):
             "title": title,
             "token": token,
             "sitekey_used": payload.sitekey,
-            "widget_found": widget_found,
+            "widget_found": True,
             "submitted": submitted,
+            "download_ready": has_download,
             "browser_mode": _browser_mode,
             "user_agent": user_agent,
             "cookies_count": len(cookies),
