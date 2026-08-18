@@ -1,6 +1,7 @@
 import asyncio
 import json
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import nodriver as uc
 
@@ -19,10 +20,10 @@ BROWSER_ARGS = [
     "--window-size=1280,720",
 ]
 
-CF_WAIT_SECONDS = 30
-TOKEN_WAIT_SECONDS = 30
+CF_WAIT_SECONDS = 25
+TOKEN_WAIT_SECONDS = 25
 POST_SETTLE_SECONDS = 3
-FLOW_TIMEOUT = 90
+FLOW_TIMEOUT = 75
 
 
 class SolvePayload(BaseModel):
@@ -35,11 +36,12 @@ async def get_browser():
     global _browser
     async with _browser_lock:
         if _browser is None:
-            _browser = await uc.start(
+            config = uc.Config(
                 headless=True,
-                no_sandbox=True,
+                sandbox=False,
                 browser_args=BROWSER_ARGS,
             )
+            _browser = await uc.start(config=config)
     return _browser
 
 
@@ -154,34 +156,45 @@ async def click_submit(tab):
         return False
 
 
-def to_netscape(cookie):
-    c = cookie if isinstance(cookie, dict) else {}
-    domain = c.get("domain", "")
-    path = c.get("path", "/")
-    secure = "TRUE" if c.get("secure") else "FALSE"
+def sanitize_cookie(c):
+    name = str(getattr(c, "name", "") or (c.get("name", "") if isinstance(c, dict) else ""))
+    value = str(getattr(c, "value", "") or (c.get("value", "") if isinstance(c, dict) else ""))
+    domain = str(getattr(c, "domain", "") or (c.get("domain", "") if isinstance(c, dict) else ""))
+    path = str(getattr(c, "path", "/") or (c.get("path", "/") if isinstance(c, dict) else "/"))
+    expires = getattr(c, "expires", 0) or (c.get("expires", 0) if isinstance(c, dict) else 0)
     try:
-        expires = int(c.get("expires", 0) or 0)
-    except (TypeError, ValueError):
+        expires = int(expires)
+    except Exception:
         expires = 0
-    name = c.get("name", "")
-    value = c.get("value", "")
-    prefix = "#HttpOnly_" if c.get("httpOnly") else ""
-    return f"{prefix}{domain}\tTRUE\t{path}\t{secure}\t{expires}\t{name}\t{value}"
+    http_only = bool(getattr(c, "http_only", False) or (c.get("httpOnly", False) if isinstance(c, dict) else False))
+    secure = bool(getattr(c, "secure", False) or (c.get("secure", False) if isinstance(c, dict) else False))
+
+    return {
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": path,
+        "expires": expires,
+        "httpOnly": http_only,
+        "secure": secure,
+    }
 
 
 async def collect_cookies(browser):
     raw = await browser.cookies.get_all()
     cookies = []
     header_parts = []
-    for c in raw:
-        data = c.to_json() if hasattr(c, "to_json") else (c.__dict__ if hasattr(c, "__dict__") else {})
-        if not data and isinstance(c, dict):
-            data = c
-        if data.get("name") and data.get("value") is not None:
-            cookies.append(data)
-            header_parts.append(f"{data['name']}={data['value']}")
     netscape = ["# Netscape HTTP Cookie File"]
-    netscape.extend(to_netscape(c) for c in cookies if c.get("domain") and c.get("name"))
+
+    for item in raw:
+        c = sanitize_cookie(item)
+        if c["name"] and c["value"] is not None:
+            cookies.append(c)
+            header_parts.append(f"{c['name']}={c['value']}")
+            prefix = "#HttpOnly_" if c["httpOnly"] else ""
+            sec_flag = "TRUE" if c["secure"] else "FALSE"
+            netscape.append(f"{prefix}{c['domain']}\tTRUE\t{c['path']}\t{sec_flag}\t{c['expires']}\t{c['name']}\t{c['value']}")
+
     return cookies, "; ".join(header_parts), "\n".join(netscape)
 
 
@@ -191,7 +204,7 @@ async def solve_flow(payload: SolvePayload):
     try:
         title = await wait_cf_pass(tab)
         if "Just a moment" in title or not title:
-            raise RuntimeError("Cloudflare challenge gagal dilewati dalam 30 detik")
+            raise RuntimeError("Cloudflare challenge tidak selesai")
 
         state = await get_page_state(tab)
         token = ""
@@ -215,18 +228,18 @@ async def solve_flow(payload: SolvePayload):
 
         final_url = ""
         try:
-            final_url = tab.url or ""
+            final_url = str(tab.url or "")
         except Exception:
             pass
 
         return {
             "success": True,
-            "title": title,
-            "token": token,
-            "sitekey_used": payload.sitekey,
-            "widget_found": widget_found,
-            "submitted": submitted,
-            "user_agent": user_agent,
+            "title": str(title),
+            "token": str(token),
+            "sitekey_used": str(payload.sitekey),
+            "widget_found": bool(widget_found),
+            "submitted": bool(submitted),
+            "user_agent": str(user_agent),
             "cookie_header": cookie_header,
             "cookies_count": len(cookies),
             "cookies": cookies,
@@ -249,10 +262,11 @@ async def health():
 async def solve_url(payload: SolvePayload):
     async with _solve_lock:
         try:
-            return await asyncio.wait_for(solve_flow(payload), timeout=FLOW_TIMEOUT)
+            result = await asyncio.wait_for(solve_flow(payload), timeout=FLOW_TIMEOUT)
+            return JSONResponse(content=result)
         except asyncio.TimeoutError:
             await reset_browser()
-            return {"success": False, "error": "Operation timed out"}
+            return JSONResponse(status_code=504, content={"success": False, "error": "Operation timed out"})
         except Exception as e:
             await reset_browser()
-            return {"success": False, "error": str(e)}
+            return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
