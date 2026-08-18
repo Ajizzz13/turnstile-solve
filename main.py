@@ -345,6 +345,19 @@ async def diag():
             result["nodriver_like_stderr"] = ((e.stderr or b"").decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or ""))[:1500]
         except Exception as e:
             result["nodriver_like_error"] = str(e)[:500]
+
+    try:
+        browser = await asyncio.wait_for(
+            uc.start(headless=True, sandbox=False, browser_args=BROWSER_ARGS), timeout=45
+        )
+        result["uc_start"] = "ok"
+        try:
+            await browser.stop()
+        except Exception:
+            pass
+    except Exception as e:
+        result["uc_start"] = "failed"
+        result["uc_start_error"] = str(e)[:1000]
     return result
 
 
