@@ -12,6 +12,8 @@ _browser_lock = asyncio.Lock()
 _solve_lock = asyncio.Lock()
 _browser_mode = "headful" if os.environ.get("HEADLESS", "1") != "1" else "headless"
 
+CHROME_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+
 BROWSER_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -19,12 +21,14 @@ BROWSER_ARGS = [
     "--disable-gpu",
     "--no-first-run",
     "--window-size=1280,720",
+    "--lang=en-US,en",
+    f"--user-agent={CHROME_UA}",
 ]
 
-CF_WAIT_SECONDS = 30
-TOKEN_WAIT_SECONDS = 30
+CF_WAIT_SECONDS = 60
+TOKEN_WAIT_SECONDS = 45
 POST_SETTLE_SECONDS = 4
-FLOW_TIMEOUT = 120
+FLOW_TIMEOUT = 180
 
 
 class URLPayload(BaseModel):
