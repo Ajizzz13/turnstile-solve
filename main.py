@@ -29,10 +29,14 @@ async def resolve_url(payload: URLPayload):
         )
         
         page = await browser.get(payload.url)
-        await asyncio.sleep(6)
         
-        title = await page.evaluate("document.title")
-        
+        title = ""
+        for _ in range(20):
+            await asyncio.sleep(1)
+            title = await page.evaluate("document.title")
+            if title and "Just a moment" not in str(title):
+                break
+
         raw_cookies = await browser.cookies.get_all()
         cookie_list = []
         for c in raw_cookies:
@@ -44,16 +48,13 @@ async def resolve_url(payload: URLPayload):
                 cookie_list.append(str(c))
 
         return {
-            "success": True,
+            "success": "Just a moment" not in str(title),
             "title": str(title) if title else "",
             "cookies_count": len(cookie_list),
             "cookies": cookie_list
         }
     except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
+        return {"success": False, "error": str(e)}
     finally:
         if browser:
             try:
