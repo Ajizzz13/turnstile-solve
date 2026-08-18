@@ -206,12 +206,20 @@ async def execute_solve(payload: SolvePayload):
     try:
         exe_path = find_chrome_path()
         try:
-            browser = await uc.start(
-                headless=False,
-                no_sandbox=True,
-                browser_executable_path=exe_path,
-                browser_args=BROWSER_ARGS,
-            )
+            for attempt in range(3):
+                try:
+                    browser = await uc.start(
+                        headless=False,
+                        no_sandbox=True,
+                        browser_executable_path=exe_path,
+                        browser_args=BROWSER_ARGS,
+                    )
+                    break
+                except Exception:
+                    if attempt < 2:
+                        await asyncio.sleep(2)
+                    else:
+                        raise
         except Exception as e:
             probe = ""
             try:
