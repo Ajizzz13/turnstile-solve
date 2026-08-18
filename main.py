@@ -204,7 +204,7 @@ async def execute_solve(payload: SolvePayload):
     try:
         exe_path = find_chrome_path()
         browser = await uc.start(
-            headless=True,
+            headless=False,
             no_sandbox=True,
             browser_executable_path=exe_path,
             browser_args=BROWSER_ARGS,
