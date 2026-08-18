@@ -406,6 +406,34 @@ async def diag():
     return result
 
 
+@app.post("/api/probe")
+async def probe_url(payload: URLPayload):
+    async with _solve_lock:
+        browser = None
+        try:
+            browser = await get_browser()
+            tab = await browser.get(payload.url)
+            try:
+                title = await wait_cf_pass(tab)
+                raw = await tab.evaluate("""JSON.stringify((() => {
+                    const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                        const r = f.getBoundingClientRect();
+                        return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, x: r.x, y: r.y, visible: !!(r.width && r.height)};
+                    });
+                    const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+                    return {title: document.title, iframes: ifs, inputs, htmlLen: document.documentElement.outerHTML.length};
+                })())""")
+                state = json.loads(raw) if raw else None
+                return {"success": True, "state": state}
+            finally:
+                try:
+                    await tab.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            return {"success": False, "error": str(e)[:600]}
+
+
 @app.post("/api/resolve")
 async def resolve_url(payload: URLPayload):
     async with _solve_lock:
