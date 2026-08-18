@@ -186,6 +186,8 @@ async def click_submit(tab):
 def to_netscape(cookie):
     c = cookie if isinstance(cookie, dict) else {}
     domain = c.get("domain", "")
+    if domain and not domain.startswith(".") and domain != "localhost":
+        domain = "." + domain
     path = c.get("path", "/")
     secure = "TRUE" if c.get("secure") else "FALSE"
     try:
