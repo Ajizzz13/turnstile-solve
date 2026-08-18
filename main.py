@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import traceback
@@ -14,6 +15,9 @@ app = FastAPI()
 _browser = None
 _browser_lock = asyncio.Lock()
 _solve_lock = asyncio.Lock()
+
+HEADLESS = os.environ.get("HEADLESS", "1") == "1"
+
 
 BROWSER_ARGS = [
     "--no-sandbox",
@@ -57,7 +61,7 @@ async def get_browser():
             exe_path = find_chrome_path()
             try:
                 _browser = await uc.start(
-                    headless=True,
+                    headless=HEADLESS,
                     no_sandbox=True,
                     browser_executable_path=exe_path,
                     browser_args=BROWSER_ARGS,
