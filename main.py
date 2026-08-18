@@ -244,11 +244,8 @@ async def collect_cookies(browser):
 
 
 async def solve_flow(payload):
+    await reset_browser()
     browser = await get_browser()
-    try:
-        await browser.send(cdp.network.clear_browser_cookies())
-    except Exception:
-        pass
     tab = await browser.get(payload.url)
     try:
         title = await wait_cf_pass(tab)
@@ -454,13 +451,8 @@ async def _with_retry(fn):
 
 
 async def _run_probe(payload):
+    await reset_browser()
     browser = await get_browser()
-    cleared = False
-    try:
-        await browser.send(cdp.network.clear_browser_cookies())
-        cleared = True
-    except Exception as e:
-        cleared = str(e)[:200]
     tab = await browser.get(payload.url)
     try:
         title = await wait_cf_pass(tab)
@@ -526,7 +518,7 @@ async def _run_probe(payload):
             return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
         })())""")
         state4 = json.loads(raw6) if raw6 else None
-        return {"success": True, "cleared": cleared, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3, "state_after_scroll": state4}
+        return {"success": True, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3, "state_after_scroll": state4}
     finally:
         try:
             await tab.close()
