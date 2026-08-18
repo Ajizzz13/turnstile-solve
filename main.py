@@ -222,9 +222,17 @@ async def execute_solve(payload: SolvePayload):
                     env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")},
                 )
                 probe = f"probe_rc={r.returncode} DISPLAY={os.environ.get('DISPLAY','?')} stderr={(r.stderr or '')[-600:]}"
+            except subprocess.TimeoutExpired as te:
+                probe = f"probe_HANG20s DISPLAY={os.environ.get('DISPLAY','?')} err={(te.stderr or '')[-700:]}"
             except Exception as e2:
                 probe = f"probe_exc={str(e2)[:150]} DISPLAY={os.environ.get('DISPLAY','?')}"
-            raise RuntimeError(f"{str(e)[:80]} | {probe}")
+            xvfb = ""
+            try:
+                r = subprocess.run(["ls", "-la", "/tmp/.X11-unix"], capture_output=True, text=True, timeout=5)
+                xvfb = f" X11={r.stdout[-200:] or r.stderr[-200:]}"
+            except Exception:
+                pass
+            raise RuntimeError(f"{str(e)[:80]} | {probe}{xvfb}")
 
         if browser is None:
             raise RuntimeError("browser is None")
