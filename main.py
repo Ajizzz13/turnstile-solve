@@ -147,15 +147,30 @@ async def inject_turnstile(tab, sitekey):
         (() => {{
             if (window.__tsToken !== undefined) return;
             window.__tsToken = '';
-            const el = document.createElement('div');
-            document.body.appendChild(el);
+            const setToken = (t) => {{
+                window.__tsToken = t;
+                let inp = document.querySelector('input[name="g-recaptcha-response"]');
+                if (!inp) {{
+                    inp = document.createElement('input');
+                    inp.type = 'hidden';
+                    inp.name = 'g-recaptcha-response';
+                    (document.querySelector('form') || document.body).appendChild(inp);
+                }}
+                inp.value = t;
+            }};
+            const el = document.querySelector('#recaptcha-element, .g-recaptcha') || document.body.appendChild(document.createElement('div'));
             const s = document.createElement('script');
-            s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+            s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?compat=recaptcha2&render=explicit';
             s.onload = () => {{
-                turnstile.render(el, {{
-                    sitekey: {json.dumps(sitekey)},
-                    callback: (t) => {{ window.__tsToken = t; }}
-                }});
+                try {{
+                    turnstile.render(el, {{
+                        sitekey: {json.dumps(sitekey)},
+                        callback: setToken,
+                        'error-callback': () => {{ window.__tsError = true; }}
+                    }});
+                }} catch (e) {{
+                    window.__tsError = String(e);
+                }}
             }};
             document.body.appendChild(s);
         }})()
