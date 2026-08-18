@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 import nodriver as uc
@@ -38,7 +37,7 @@ async def get_browser():
         if _browser is None:
             _browser = await uc.start(
                 headless=True,
-                sandbox=False,
+                no_sandbox=True,
                 browser_args=BROWSER_ARGS,
             )
     return _browser
@@ -213,7 +212,7 @@ async def solve_flow(payload: SolvePayload):
 
         user_agent = await tab.evaluate("navigator.userAgent")
         cookies, cookie_header, netscape = await collect_cookies(browser)
-        
+
         final_url = ""
         try:
             final_url = tab.url or ""
