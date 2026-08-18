@@ -245,6 +245,40 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/api/diag")
+async def diag():
+    import shutil
+    import subprocess
+
+    exe = (
+        shutil.which("google-chrome-stable")
+        or shutil.which("google-chrome")
+        or shutil.which("chromium")
+        or shutil.which("chromium-browser")
+        or ""
+    )
+    result = {"exe": exe or None}
+    if exe:
+        try:
+            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20)
+            result["version"] = r.stdout.strip() or r.stderr.strip()[:500]
+        except Exception as e:
+            result["version_error"] = str(e)[:500]
+        try:
+            r = subprocess.run(
+                [exe, "--headless", "--no-sandbox", "--disable-gpu", "--dump-dom", "about:blank"],
+                capture_output=True, text=True, timeout=30,
+            )
+            result["headless_rc"] = r.returncode
+            result["headless_stdout"] = (r.stdout or "")[:200]
+            result["headless_stderr"] = (r.stderr or "")[:1500]
+        except Exception as e:
+            result["headless_error"] = str(e)[:500]
+    else:
+        result["exe"] = None
+    return result
+
+
 @app.post("/api/resolve")
 async def resolve_url(payload: URLPayload):
     async with _solve_lock:
