@@ -4,37 +4,20 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import traceback
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import nodriver as uc
+from DrissionPage import ChromiumPage, ChromiumOptions
 
 app = FastAPI()
 _solve_lock = asyncio.Lock()
 
-BROWSER_ARGS = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--mute-audio",
-    "--no-zygote",
-    "--renderer-process-limit=1",
-    "--disable-site-isolation-trials",
-    '--js-flags="--max-old-space-size=128"',
-    "--window-size=1280,720",
-    "--lang=en-US,en",
-    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-]
-
 CF_WAIT_SECONDS = 45
 TOKEN_WAIT_SECONDS = 25
 POST_SETTLE_SECONDS = 3
-FLOW_TIMEOUT = 90
+FLOW_TIMEOUT = 100
 
 
 class SolvePayload(BaseModel):
@@ -53,58 +36,73 @@ def find_chrome_path():
     )
 
 
-async def get_page_state(tab):
+def build_options(user_data_dir):
+    co = ChromiumOptions()
+    co.headless(False)
+    co.set_browser_path(find_chrome_path())
+    co.set_user_data_path(user_data_dir)
+    co.set_argument("--no-sandbox")
+    co.set_argument("--disable-setuid-sandbox")
+    co.set_argument("--disable-dev-shm-usage")
+    co.set_argument("--disable-gpu")
+    co.set_argument("--no-first-run")
+    co.set_argument("--no-default-browser-check")
+    co.set_argument("--disable-extensions")
+    co.set_argument("--mute-audio")
+    co.set_argument("--no-zygote")
+    co.set_argument("--renderer-process-limit=1")
+    co.set_argument("--disable-site-isolation-trials")
+    co.set_argument("--js-flags=--max-old-space-size=128")
+    co.set_argument("--window-size=1280,720")
+    co.set_argument("--lang=en-US,en")
+    co.set_user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    return co
+
+
+def page_state(page):
     try:
-        raw = await tab.evaluate("""JSON.stringify((() => {
+        return json.loads(page.run_js("""JSON.stringify((() => {
             const inputs = document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]');
             let val = '';
             for (const el of inputs) { if (el.value && el.value.length > 10) { val = el.value; break; } }
             const hasWidget = !!document.querySelector('.g-recaptcha, .cf-turnstile, #recaptcha-element, iframe[src*="challenges.cloudflare.com"]');
             const hasSubmit = !!document.querySelector('button[type="submit"]');
             return { hasWidget, val, hasSubmit };
-        })())""")
-        return json.loads(raw) if raw else {"hasWidget": False, "val": "", "hasSubmit": False}
+        })())"""))
     except Exception:
         return {"hasWidget": False, "val": "", "hasSubmit": False}
 
 
-async def click_turnstile_checkbox(tab):
+def click_turnstile_checkbox(page):
     try:
-        raw = await tab.evaluate("""JSON.stringify((() => {
-            const f = [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
-            if (!f) return null;
-            const r = f.getBoundingClientRect();
-            return { x: r.x + 30, y: r.y + r.height / 2 };
-        })())""")
-        pos = json.loads(raw) if raw else None
-        if pos:
-            await tab.mouse.click(pos["x"], pos["y"])
-            return True
+        frame = page.get_frame("tag:iframe@src^https://challenges.cloudflare.com")
+        if frame:
+            btn = frame.ele("tag:input@type=checkbox", timeout=2) or frame.ele("tag:body", timeout=2)
+            if btn:
+                btn.click()
+                return True
     except Exception:
         pass
     return False
 
 
-async def wait_cf_pass(tab):
+def wait_cf_pass(page):
     title = ""
     clicked = False
     for i in range(CF_WAIT_SECONDS):
-        await asyncio.sleep(1)
+        time_sleep(1)
         try:
-            title = await tab.evaluate("document.title")
+            title = page.title
         except Exception:
             continue
-
         if title and "Just a moment" not in str(title):
             break
-
         if not clicked and i % 3 == 0:
-            clicked = await click_turnstile_checkbox(tab)
-
+            clicked = click_turnstile_checkbox(page)
     return str(title) if title else ""
 
 
-async def inject_turnstile(tab, sitekey):
+def inject_turnstile(page, sitekey):
     script = f"""
         (() => {{
             if (window.__tsToken !== undefined) return;
@@ -118,169 +116,126 @@ async def inject_turnstile(tab, sitekey):
                     sitekey: {json.dumps(sitekey)},
                     callback: (t) => {{ window.__tsToken = t; }}
                 }});
+                setTimeout(() => {{
+                    if (!window.__tsToken) {{
+                        try {{
+                            turnstile.render(el, {{
+                                sitekey: {json.dumps(sitekey)},
+                                appearance: 'execute',
+                                callback: (t) => {{ window.__tsToken = t; }}
+                            }});
+                        }} catch (e) {{ window.__tsToken = 'ERR:' + String(e); }}
+                    }}
+                }}, 4000);
             }};
             document.body.appendChild(s);
         }})()
     """
     try:
-        await tab.evaluate(script)
+        page.run_js(script)
         return True
     except Exception:
         return False
 
 
-async def wait_turnstile_token(tab):
+def wait_turnstile_token(page):
     clicked = False
     for _ in range(TOKEN_WAIT_SECONDS):
-        await asyncio.sleep(1)
-        state = await get_page_state(tab)
+        time_sleep(1)
+        state = page_state(page)
         if state["val"]:
             return state["val"]
         if not clicked:
-            clicked = await click_turnstile_checkbox(tab)
+            clicked = click_turnstile_checkbox(page)
         try:
-            token = await tab.evaluate("window.__tsToken || ''")
+            token = page.run_js("window.__tsToken || ''")
+            if token and not str(token).startswith("ERR:"):
+                return str(token)
             if token:
-                return token
+                return ""
         except Exception:
             pass
     return ""
 
 
-async def click_submit(tab):
+def click_submit(page):
     try:
-        return await tab.evaluate("""(() => {
-            const b = document.querySelector('button[type="submit"]');
-            if (!b) return false;
-            b.click();
-            return true;
-        })()""")
+        btn = page.ele("tag:button@type=submit", timeout=3)
+        if not btn:
+            return False
+        btn.click()
+        return True
     except Exception:
         return False
 
 
-def sanitize_cookie(c):
-    name = str(getattr(c, "name", "") or (c.get("name", "") if isinstance(c, dict) else ""))
-    value = str(getattr(c, "value", "") or (c.get("value", "") if isinstance(c, dict) else ""))
-    domain = str(getattr(c, "domain", "") or (c.get("domain", "") if isinstance(c, dict) else ""))
-    path = str(getattr(c, "path", "/") or (c.get("path", "/") if isinstance(c, dict) else "/"))
-    expires = getattr(c, "expires", 0) or (c.get("expires", 0) if isinstance(c, dict) else 0)
-    try:
-        expires = int(expires)
-    except Exception:
-        expires = 0
-    http_only = bool(getattr(c, "http_only", False) or (c.get("httpOnly", False) if isinstance(c, dict) else False))
-    secure = bool(getattr(c, "secure", False) or (c.get("secure", False) if isinstance(c, dict) else False))
-
-    return {
-        "name": name,
-        "value": value,
-        "domain": domain,
-        "path": path,
-        "expires": expires,
-        "httpOnly": http_only,
-        "secure": secure,
-    }
-
-
-async def collect_cookies(browser):
-    raw = await browser.cookies.get_all()
+def collect_cookies(page):
+    raw = page.cookies(as_dict=False)
     cookies = []
     header_parts = []
     netscape = ["# Netscape HTTP Cookie File"]
-
-    for item in raw:
-        c = sanitize_cookie(item)
-        if c["name"] and c["value"] is not None:
-            cookies.append(c)
-            header_parts.append(f"{c['name']}={c['value']}")
-            prefix = "#HttpOnly_" if c["httpOnly"] else ""
-            sec_flag = "TRUE" if c["secure"] else "FALSE"
-            netscape.append(f"{prefix}{c['domain']}\tTRUE\t{c['path']}\t{sec_flag}\t{c['expires']}\t{c['name']}\t{c['value']}")
-
+    for c in raw:
+        name = str(c.get("name", "") or "")
+        value = str(c.get("value", "") or "")
+        if not name or value is None:
+            continue
+        domain = str(c.get("domain", "") or "")
+        path = str(c.get("path", "/") or "/")
+        expires = c.get("expires", 0) or 0
+        try:
+            expires = int(expires)
+        except Exception:
+            expires = 0
+        http_only = bool(c.get("httpOnly", False))
+        secure = bool(c.get("secure", False))
+        cookies.append({
+            "name": name, "value": value, "domain": domain, "path": path,
+            "expires": expires, "httpOnly": http_only, "secure": secure,
+        })
+        header_parts.append(f"{name}={value}")
+        prefix = "#HttpOnly_" if http_only else ""
+        sec_flag = "TRUE" if secure else "FALSE"
+        netscape.append(f"{prefix}{domain}\tTRUE\t{path}\t{sec_flag}\t{expires}\t{name}\t{value}")
     return cookies, "; ".join(header_parts), "\n".join(netscape)
 
 
-async def execute_solve(payload: SolvePayload):
-    browser = None
+def time_sleep(sec):
+    import time
+    time.sleep(sec)
+
+
+def execute_solve(payload: SolvePayload):
+    page = None
+    user_data_dir = tempfile.mkdtemp(prefix="dp-")
     try:
-        exe_path = find_chrome_path()
-        try:
-            for attempt in range(3):
-                try:
-                    browser = await uc.start(
-                        headless=False,
-                        no_sandbox=True,
-                        browser_executable_path=exe_path,
-                        browser_args=BROWSER_ARGS,
-                    )
-                    break
-                except Exception:
-                    if attempt < 2:
-                        await asyncio.sleep(2)
-                    else:
-                        raise
-        except Exception as e:
-            probe = ""
-            try:
-                p = subprocess.Popen(
-                    [exe_path, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                     "--enable-logging=stderr", "--log-level=0", "about:blank"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")},
-                )
-                try:
-                    rc = p.wait(timeout=15)
-                    probe = f"probe_rc={rc} DISPLAY={os.environ.get('DISPLAY','?')}"
-                except subprocess.TimeoutExpired:
-                    p.kill()
-                    probe = f"probe_RUNNING_15s DISPLAY={os.environ.get('DISPLAY','?')}"
-                out, err = p.communicate()
-                probe += f" stderr={(err or '')[-1500:]}"
-            except Exception as e2:
-                probe = f"probe_exc={str(e2)[:150]} DISPLAY={os.environ.get('DISPLAY','?')}"
-            xvfb = ""
-            try:
-                r = subprocess.run(["ls", "-la", "/tmp/.X11-unix"], capture_output=True, text=True, timeout=5)
-                xvfb = f" X11={(r.stdout or '')[-150:]}"
-            except Exception:
-                pass
-            raise RuntimeError(f"{str(e)[:80]} | {probe}{xvfb}")
+        co = build_options(user_data_dir)
+        page = ChromiumPage(co)
 
-        if browser is None:
-            raise RuntimeError("browser is None")
-
-        tab = await browser.get(payload.url)
-
-        title = await wait_cf_pass(tab)
+        page.get(payload.url)
+        title = wait_cf_pass(page)
         if "Just a moment" in title or not title:
             raise RuntimeError("Gagal melewati halaman verifikasi awal Cloudflare (Just a moment...)")
 
-        state = await get_page_state(tab)
+        state = page_state(page)
         token = ""
         widget_found = state["hasWidget"]
 
         if widget_found:
-            token = await wait_turnstile_token(tab)
+            token = wait_turnstile_token(page)
         elif payload.sitekey:
-            widget_found = await inject_turnstile(tab, payload.sitekey)
+            widget_found = inject_turnstile(page, payload.sitekey)
             if widget_found:
-                token = await wait_turnstile_token(tab)
+                token = wait_turnstile_token(page)
 
         submitted = False
         if payload.submit and widget_found:
-            if (await get_page_state(tab))["hasSubmit"]:
-                submitted = await click_submit(tab)
-                await asyncio.sleep(POST_SETTLE_SECONDS)
+            if page_state(page)["hasSubmit"]:
+                submitted = click_submit(page)
+                time_sleep(POST_SETTLE_SECONDS)
 
-        user_agent = await tab.evaluate("navigator.userAgent")
-        cookies, cookie_header, netscape = await collect_cookies(browser)
-
-        final_url = ""
-        try:
-            final_url = str(tab.url or "")
-        except Exception:
-            pass
+        user_agent = page.user_agent
+        cookies, cookie_header, netscape = collect_cookies(page)
+        final_url = page.url or ""
 
         return {
             "success": True,
@@ -294,14 +249,18 @@ async def execute_solve(payload: SolvePayload):
             "cookies_count": len(cookies),
             "cookies": cookies,
             "netscape": netscape,
-            "final_url": final_url,
+            "final_url": str(final_url),
         }
     finally:
-        if browser:
+        if page:
             try:
-                browser.stop()
+                page.quit()
             except Exception:
                 pass
+        try:
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+        except Exception:
+            pass
         gc.collect()
 
 
@@ -314,7 +273,9 @@ async def health():
 async def solve_url(payload: SolvePayload):
     async with _solve_lock:
         try:
-            result = await asyncio.wait_for(execute_solve(payload), timeout=FLOW_TIMEOUT)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(execute_solve, payload), timeout=FLOW_TIMEOUT
+            )
             return JSONResponse(status_code=200, content=result)
         except asyncio.TimeoutError:
             gc.collect()
