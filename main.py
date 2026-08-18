@@ -302,6 +302,11 @@ async def solve_flow(payload: SolvePayload):
                     await asyncio.sleep(POST_SETTLE_SECONDS)
 
         user_agent = await tab.evaluate("navigator.userAgent")
+        ts_error = ""
+        try:
+            ts_error = await tab.evaluate("window.__tsError || ''")
+        except Exception:
+            pass
         cookies, cookie_header, netscape = await collect_cookies(browser)
 
         final_url = ""
@@ -318,6 +323,7 @@ async def solve_flow(payload: SolvePayload):
             "widget_found": bool(widget_found),
             "submitted": bool(submitted),
             "download_ready": bool(state["hasDownload"]),
+            "ts_error": str(ts_error),
             "user_agent": str(user_agent),
             "cookie_header": cookie_header,
             "cookies_count": len(cookies),
