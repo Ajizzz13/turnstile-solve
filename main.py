@@ -421,10 +421,21 @@ async def probe_url(payload: URLPayload):
                         return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, x: r.x, y: r.y, visible: !!(r.width && r.height)};
                     });
                     const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
-                    return {title: document.title, iframes: ifs, inputs, htmlLen: document.documentElement.outerHTML.length};
+                    const scripts = [...document.scripts].map(s => (s.src||'').slice(0,90));
+                    return {title: document.title, iframes: ifs, inputs, scripts, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha, htmlLen: document.documentElement.outerHTML.length};
                 })())""")
                 state = json.loads(raw) if raw else None
-                return {"success": True, "state": state}
+                await asyncio.sleep(4)
+                raw2 = await tab.evaluate("""JSON.stringify((() => {
+                    const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                        const r = f.getBoundingClientRect();
+                        return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
+                    });
+                    const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+                    return {iframes: ifs, inputs, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha};
+                })())""")
+                state2 = json.loads(raw2) if raw2 else None
+                return {"success": True, "state": state, "state_after4s": state2}
             finally:
                 try:
                     await tab.close()
