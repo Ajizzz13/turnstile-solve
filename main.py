@@ -73,6 +73,46 @@ def page_state(page):
         return {"hasWidget": False, "val": "", "hasSubmit": False}
 
 
+def chrome_probe(exe_path):
+    """Run chrome headful 20s, capture stderr, return evidence string."""
+    evidence = ""
+    try:
+        p = subprocess.Popen(
+            [exe_path, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+             "--enable-logging=stderr", "--v=1", "about:blank"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")},
+        )
+        try:
+            rc = p.wait(timeout=20)
+            evidence = f"probe_exit={rc}"
+        except subprocess.TimeoutExpired:
+            p.kill()
+            evidence = "probe_ALIVE_20s"
+        out, err = p.communicate(timeout=10)
+        lines = [l for l in (err or "").splitlines()
+                 if any(k in l for k in ("FATAL", "ERROR", "GL", "GPU", "X11", "Xlib", "sandbox", "fontconfig", "dbus", "zygote", "shm", "memfd"))]
+        evidence += f" lines={len(lines)}"
+        evidence += " || " + " ;; ".join(lines[-12:])
+    except Exception as e:
+        evidence = f"probe_exc={str(e)[:200]}"
+    try:
+        r = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
+        chrome_lines = [l for l in r.stdout.splitlines() if "chrome" in l]
+        evidence += f" || chrome_procs={len(chrome_lines)}"
+        for l in chrome_lines[-3:]:
+            parts = l.split()
+            evidence += f" [{parts[1]} {parts[10] if len(parts) > 10 else '?'}]"
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["ls", "-la", "/tmp/.X11-unix"], capture_output=True, text=True, timeout=5)
+        evidence += f" || X11={(r.stdout or '')[-120:]}"
+    except Exception:
+        pass
+    return evidence
+
+
 def click_turnstile_checkbox(page):
     try:
         frame = page.get_frame("tag:iframe@src^https://challenges.cloudflare.com")
@@ -209,7 +249,10 @@ def execute_solve(payload: SolvePayload):
     user_data_dir = tempfile.mkdtemp(prefix="dp-")
     try:
         co = build_options(user_data_dir)
-        page = ChromiumPage(co)
+        try:
+            page = ChromiumPage(co)
+        except Exception as e:
+            raise RuntimeError(f"chromium_start={str(e)[:150]} || {chrome_probe(find_chrome_path())}")
 
         page.get(payload.url)
         title = wait_cf_pass(page)
@@ -266,7 +309,7 @@ def execute_solve(payload: SolvePayload):
 
 @app.get("/")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "v": 2}
 
 
 @app.post("/api/solve")
