@@ -223,21 +223,26 @@ async def execute_solve(payload: SolvePayload):
         except Exception as e:
             probe = ""
             try:
-                r = subprocess.run(
+                p = subprocess.Popen(
                     [exe_path, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-                     "--enable-logging=stderr", "--dump-dom", "about:blank"],
-                    capture_output=True, text=True, timeout=20,
+                     "--enable-logging=stderr", "--log-level=0", "about:blank"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")},
                 )
-                probe = f"probe_rc={r.returncode} DISPLAY={os.environ.get('DISPLAY','?')} stderr={(r.stderr or '')[-600:]}"
-            except subprocess.TimeoutExpired as te:
-                probe = f"probe_HANG20s DISPLAY={os.environ.get('DISPLAY','?')} err={(te.stderr or '')[-700:]}"
+                try:
+                    rc = p.wait(timeout=15)
+                    probe = f"probe_rc={rc} DISPLAY={os.environ.get('DISPLAY','?')}"
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    probe = f"probe_RUNNING_15s DISPLAY={os.environ.get('DISPLAY','?')}"
+                out, err = p.communicate()
+                probe += f" stderr={(err or '')[-1500:]}"
             except Exception as e2:
                 probe = f"probe_exc={str(e2)[:150]} DISPLAY={os.environ.get('DISPLAY','?')}"
             xvfb = ""
             try:
                 r = subprocess.run(["ls", "-la", "/tmp/.X11-unix"], capture_output=True, text=True, timeout=5)
-                xvfb = f" X11={r.stdout[-200:] or r.stderr[-200:]}"
+                xvfb = f" X11={(r.stdout or '')[-150:]}"
             except Exception:
                 pass
             raise RuntimeError(f"{str(e)[:80]} | {probe}{xvfb}")
