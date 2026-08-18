@@ -509,6 +509,7 @@ async def _run_probe(payload):
             const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
             return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
         })())""")
+        state3 = json.loads(raw4) if raw4 else None
         await asyncio.sleep(6)
         raw5 = await tab.evaluate("""JSON.stringify((() => {
             const el = document.getElementById('recaptcha-element');
