@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 import nodriver as uc
 
@@ -10,7 +10,7 @@ class URLPayload(BaseModel):
 
 @app.get("/")
 async def health():
-    return {"status": "running"}
+    return {"status": "ok"}
 
 @app.post("/api/resolve")
 async def resolve_url(payload: URLPayload):
@@ -18,26 +18,45 @@ async def resolve_url(payload: URLPayload):
     try:
         browser = await uc.start(
             headless=True,
-            no_sandbox=True,
             browser_args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--window-size=1920,1080"
+                "--no-first-run",
+                "--window-size=1280,720"
             ]
         )
+        
         page = await browser.get(payload.url)
-        await asyncio.sleep(5)
-
-        cookies = await page.send(uc.cdp.network.get_cookies())
+        await asyncio.sleep(6)
+        
         title = await page.evaluate("document.title")
+        
+        raw_cookies = await browser.cookies.get_all()
+        cookie_list = []
+        for c in raw_cookies:
+            if hasattr(c, "to_json"):
+                cookie_list.append(c.to_json())
+            elif hasattr(c, "__dict__"):
+                cookie_list.append(c.__dict__)
+            else:
+                cookie_list.append(str(c))
 
         return {
             "success": True,
-            "title": title,
-            "cookies": [c.to_json() for c in cookies]
+            "title": str(title) if title else "",
+            "cookies_count": len(cookie_list),
+            "cookies": cookie_list
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "success": False,
+            "error": str(e)
+        }
     finally:
         if browser:
-            browser.stop()
+            try:
+                browser.stop()
+            except Exception:
+                pass
