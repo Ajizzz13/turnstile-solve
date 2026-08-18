@@ -25,7 +25,7 @@ BROWSER_ARGS = [
     "--window-size=1280,720",
 ]
 
-CF_WAIT_SECONDS = 25
+CF_WAIT_SECONDS = 30
 TOKEN_WAIT_SECONDS = 25
 POST_SETTLE_SECONDS = 3
 FLOW_TIMEOUT = 75
@@ -54,6 +54,7 @@ async def get_browser():
             exe_path = find_chrome_path()
             _browser = await uc.start(
                 headless=True,
+                no_sandbox=True,
                 browser_executable_path=exe_path,
                 browser_args=BROWSER_ARGS,
             )
@@ -69,19 +70,6 @@ async def reset_browser():
             except Exception:
                 pass
             _browser = None
-
-
-async def wait_cf_pass(tab):
-    title = ""
-    for _ in range(CF_WAIT_SECONDS):
-        await asyncio.sleep(1)
-        try:
-            title = await tab.evaluate("document.title")
-        except Exception:
-            continue
-        if title and "Just a moment" not in str(title):
-            break
-    return str(title) if title else ""
 
 
 async def get_page_state(tab):
@@ -105,6 +93,7 @@ async def click_turnstile_checkbox(tab):
             const f = [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
             if (!f) return null;
             const r = f.getBoundingClientRect();
+            // Geser klik ke area kotak centang (sekitar 30px dari kiri)
             return { x: r.x + 30, y: r.y + r.height / 2 };
         })())""")
         pos = json.loads(raw) if raw else None
@@ -114,6 +103,26 @@ async def click_turnstile_checkbox(tab):
     except Exception:
         pass
     return False
+
+
+async def wait_cf_pass(tab):
+    title = ""
+    clicked = False
+    for i in range(CF_WAIT_SECONDS):
+        await asyncio.sleep(1)
+        try:
+            title = await tab.evaluate("document.title")
+        except Exception:
+            continue
+            
+        if title and "Just a moment" not in str(title):
+            break
+            
+        # Secara aktif mencari dan klik checkbox jika masih tertahan di WAF Cloudflare
+        if not clicked and i % 3 == 0:
+            clicked = await click_turnstile_checkbox(tab)
+            
+    return str(title) if title else ""
 
 
 async def inject_turnstile(tab, sitekey):
@@ -219,7 +228,7 @@ async def solve_flow(payload: SolvePayload):
     try:
         title = await wait_cf_pass(tab)
         if "Just a moment" in title or not title:
-            raise RuntimeError("Cloudflare challenge tidak selesai")
+            raise RuntimeError("Gagal melewati halaman verifikasi awal Cloudflare (Just a moment...)")
 
         state = await get_page_state(tab)
         token = ""
@@ -295,8 +304,10 @@ async def solve_url(payload: SolvePayload):
         except asyncio.TimeoutError:
             print("ERROR: solve_url timed out", flush=True)
             await reset_browser()
-            return JSONResponse(status_code=504, content={"success": False, "error": "Operation timed out"})
+            # Status diubah ke 200 agar body JSON tidak dibajak Render/Cloudflare
+            return JSONResponse(status_code=200, content={"success": False, "error": "Operation timed out"})
         except Exception as e:
             traceback.print_exc()
             await reset_browser()
-            return JSONResponse(status_code=500, content={"success": False, "error": str(e)})
+            # Status diubah ke 200 agar body JSON tidak dibajak Render/Cloudflare
+            return JSONResponse(status_code=200, content={"success": False, "error": str(e)})
