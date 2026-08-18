@@ -92,11 +92,23 @@ async def get_page_state(tab):
 async def click_turnstile_checkbox(tab):
     try:
         raw = await tab.evaluate("""JSON.stringify((() => {
-            const f = [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
-            if (!f) return null;
+            const fs = [...document.querySelectorAll('iframe')];
+            let f = fs.find(e => (e.src || '').includes('challenges.cloudflare.com'));
+            let hint = 'challenge';
+            if (!f) {
+                f = fs.find(e => (e.getBoundingClientRect().width || 0) < 10);
+                hint = 'tiny';
+            }
+            if (!f) {
+                const el = document.getElementById('recaptcha-element') || document.querySelector('.g-recaptcha');
+                if (el) {
+                    const r = el.getBoundingClientRect();
+                    return { x: r.x + 30, y: r.y + r.height / 2, hint: 'div' };
+                }
+                return null;
+            }
             const r = f.getBoundingClientRect();
-            // Geser klik ke area kotak centang (sekitar 30px dari kiri)
-            return { x: r.x + 30, y: r.y + r.height / 2 };
+            return { x: r.x + 30, y: r.y + r.height / 2, hint };
         })())""")
         pos = json.loads(raw) if raw else None
         if pos:
