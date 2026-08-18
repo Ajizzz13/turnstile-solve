@@ -1,7 +1,9 @@
 import asyncio
 import gc
 import json
+import os
 import shutil
+import subprocess
 import traceback
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -203,12 +205,29 @@ async def execute_solve(payload: SolvePayload):
     browser = None
     try:
         exe_path = find_chrome_path()
-        browser = await uc.start(
-            headless=False,
-            no_sandbox=True,
-            browser_executable_path=exe_path,
-            browser_args=BROWSER_ARGS,
-        )
+        try:
+            browser = await uc.start(
+                headless=False,
+                no_sandbox=True,
+                browser_executable_path=exe_path,
+                browser_args=BROWSER_ARGS,
+            )
+        except Exception as e:
+            probe = ""
+            try:
+                r = subprocess.run(
+                    [exe_path, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
+                     "--enable-logging=stderr", "--dump-dom", "about:blank"],
+                    capture_output=True, text=True, timeout=20,
+                    env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")},
+                )
+                probe = f"probe_rc={r.returncode} DISPLAY={os.environ.get('DISPLAY','?')} stderr={(r.stderr or '')[-600:]}"
+            except Exception as e2:
+                probe = f"probe_exc={str(e2)[:150]} DISPLAY={os.environ.get('DISPLAY','?')}"
+            raise RuntimeError(f"{str(e)[:80]} | {probe}")
+
+        if browser is None:
+            raise RuntimeError("browser is None")
 
         tab = await browser.get(payload.url)
 
