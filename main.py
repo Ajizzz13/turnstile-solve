@@ -31,7 +31,7 @@ BROWSER_ARGS = [
 CF_WAIT_SECONDS = 60
 TOKEN_WAIT_SECONDS = 25
 POST_SETTLE_SECONDS = 3
-FLOW_TIMEOUT = 75
+FLOW_TIMEOUT = 110
 
 
 class SolvePayload(BaseModel):
@@ -82,12 +82,14 @@ async def get_page_state(tab):
             let val = '';
             for (const el of inputs) { if (el.value && el.value.length > 10) { val = el.value; break; } }
             const hasWidget = !!document.querySelector('.g-recaptcha, .cf-turnstile, #recaptcha-element, iframe[src*="challenges.cloudflare.com"]');
+            const hasIframe = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]');
             const hasSubmit = !!document.querySelector('button[type="submit"]');
-            return { hasWidget, val, hasSubmit };
+            const hasDownload = !!document.querySelector('#download');
+            return { hasWidget, hasIframe, hasSubmit, hasDownload, val };
         })())""")
-        return json.loads(raw) if raw else {"hasWidget": False, "val": "", "hasSubmit": False}
+        return json.loads(raw) if raw else {"hasWidget": False, "hasIframe": False, "val": "", "hasSubmit": False, "hasDownload": False}
     except Exception:
-        return {"hasWidget": False, "val": "", "hasSubmit": False}
+        return {"hasWidget": False, "hasIframe": False, "val": "", "hasSubmit": False, "hasDownload": False}
 
 
 async def click_turnstile_checkbox(tab):
@@ -232,7 +234,10 @@ async def collect_cookies(browser):
             header_parts.append(f"{c['name']}={c['value']}")
             prefix = "#HttpOnly_" if c["httpOnly"] else ""
             sec_flag = "TRUE" if c["secure"] else "FALSE"
-            netscape.append(f"{prefix}{c['domain']}\tTRUE\t{c['path']}\t{sec_flag}\t{c['expires']}\t{c['name']}\t{c['value']}")
+            domain = c["domain"]
+            if domain and not domain.startswith("."):
+                domain = "." + domain
+            netscape.append(f"{prefix}{domain}\tTRUE\t{c['path']}\t{sec_flag}\t{c['expires']}\t{c['name']}\t{c['value']}")
 
     return cookies, "; ".join(header_parts), "\n".join(netscape)
 
@@ -260,19 +265,26 @@ async def solve_flow(payload: SolvePayload):
         state = await get_page_state(tab)
         token = ""
         widget_found = state["hasWidget"]
-
-        if widget_found:
-            token = await wait_turnstile_token(tab)
-        elif payload.sitekey:
-            widget_found = await inject_turnstile(tab, payload.sitekey)
-            if widget_found:
-                token = await wait_turnstile_token(tab)
-
         submitted = False
-        if payload.submit and widget_found:
-            if (await get_page_state(tab))["hasSubmit"]:
-                submitted = await click_submit(tab)
-                await asyncio.sleep(POST_SETTLE_SECONDS)
+
+        if not state["hasDownload"]:
+            if widget_found:
+                if state["hasIframe"]:
+                    token = await wait_turnstile_token(tab)
+                else:
+                    await asyncio.sleep(2)
+                    state = await get_page_state(tab)
+                    if state["hasIframe"]:
+                        token = await wait_turnstile_token(tab)
+            if not token and payload.sitekey:
+                widget_found = await inject_turnstile(tab, payload.sitekey) or widget_found
+                if widget_found:
+                    await asyncio.sleep(2)
+                    token = await wait_turnstile_token(tab)
+            if payload.submit:
+                if (await get_page_state(tab))["hasSubmit"]:
+                    submitted = await click_submit(tab)
+                    await asyncio.sleep(POST_SETTLE_SECONDS)
 
         user_agent = await tab.evaluate("navigator.userAgent")
         cookies, cookie_header, netscape = await collect_cookies(browser)
@@ -290,6 +302,7 @@ async def solve_flow(payload: SolvePayload):
             "sitekey_used": str(payload.sitekey),
             "widget_found": bool(widget_found),
             "submitted": bool(submitted),
+            "download_ready": bool(state["hasDownload"]),
             "user_agent": str(user_agent),
             "cookie_header": cookie_header,
             "cookies_count": len(cookies),
