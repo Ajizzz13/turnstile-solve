@@ -17,16 +17,17 @@ async def resolve_url(payload: URLPayload):
     browser = None
     try:
         browser = await uc.start(
+            headless=True,
+            no_sandbox=True,
             browser_args=[
-                "--no-sandbox",
                 "--disable-dev-shm-usage",
                 "--disable-gpu",
-                "--headless=new"
+                "--window-size=1920,1080"
             ]
         )
         page = await browser.get(payload.url)
-        await asyncio.sleep(4)
-        
+        await asyncio.sleep(5)
+
         cookies = await page.send(uc.cdp.network.get_cookies())
         title = await page.evaluate("document.title")
 
