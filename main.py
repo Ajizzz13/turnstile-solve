@@ -41,21 +41,28 @@ async def get_browser():
     global _browser, _browser_mode
     async with _browser_lock:
         if _browser is None:
-            try:
-                _browser = await uc.start(
-                    headless=_browser_mode == "headless",
-                    sandbox=False,
-                    browser_args=BROWSER_ARGS,
-                )
-            except Exception:
-                if _browser_mode == "headless":
-                    raise
-                _browser_mode = "headless"
-                _browser = await uc.start(
-                    headless=True,
-                    sandbox=False,
-                    browser_args=BROWSER_ARGS,
-                )
+            last_err = None
+            for attempt in range(3):
+                try:
+                    _browser = await uc.start(
+                        headless=_browser_mode == "headless",
+                        sandbox=False,
+                        browser_args=BROWSER_ARGS,
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    try:
+                        import subprocess
+                        subprocess.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=10)
+                    except Exception:
+                        pass
+                    if _browser_mode == "headless" and attempt == 2:
+                        raise
+                    _browser_mode = "headless"
+                    await asyncio.sleep(2 * (attempt + 1))
+            if _browser is None:
+                raise last_err
     return _browser
 
 
@@ -383,6 +390,13 @@ async def diag():
         sp.run(["pkill", "-9", "-f", "chrome"], capture_output=True, timeout=10)
     except Exception:
         pass
+
+    for f in ["/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.high", "/sys/fs/cgroup/memory.peak"]:
+        try:
+            with open(f) as fh:
+                result[os.path.basename(f)] = fh.read().strip()
+        except Exception:
+            pass
     return result
 
 
