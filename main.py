@@ -12,8 +12,6 @@ _browser_lock = asyncio.Lock()
 _solve_lock = asyncio.Lock()
 _browser_mode = "headful" if os.environ.get("HEADLESS", "1") != "1" else "headless"
 
-HEADLESS = os.environ.get("HEADLESS", "1") == "1"
-
 BROWSER_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -106,7 +104,7 @@ async def click_turnstile_checkbox(tab):
             const f = [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
             if (!f) return null;
             const r = f.getBoundingClientRect();
-            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+            return { x: r.x + 30, y: r.y + r.height / 2 };
         })())""")
         pos = json.loads(raw) if raw else None
         if pos:
@@ -144,14 +142,15 @@ async def inject_turnstile(tab, sitekey):
 
 async def wait_turnstile_token(tab):
     token = ""
-    for i in range(TOKEN_WAIT_SECONDS):
+    clicked = False
+    for _ in range(TOKEN_WAIT_SECONDS):
         await asyncio.sleep(1)
         state = await page_state(tab)
         token = state["val"]
         if token:
             break
-        if i % 2 == 0:
-            await click_turnstile_checkbox(tab)
+        if not clicked:
+            clicked = await click_turnstile_checkbox(tab)
         try:
             token = await tab.evaluate("window.__tsToken || ''")
         except Exception:
@@ -188,68 +187,97 @@ def to_netscape(cookie):
     return f"{prefix}{domain}\tTRUE\t{path}\t{secure}\t{expires}\t{name}\t{value}"
 
 
+def cookie_matches(cookie, host):
+    domain = (cookie.get("domain") or "").lstrip(".")
+    host = (host or "").lower()
+    if not domain:
+        return True
+    return host == domain or host.endswith("." + domain)
+
+
 async def collect_cookies(browser):
     raw = await browser.cookies.get_all()
     cookies = []
     for c in raw:
         if hasattr(c, "to_json"):
-            cookies.append(c.to_json())
+            data = c.to_json()
         elif hasattr(c, "__dict__"):
-            cookies.append(c.__dict__)
+            data = c.__dict__
         else:
-            cookies.append({"raw": str(c)})
-    netscape = ["# Netscape HTTP Cookie File"]
-    netscape.extend(to_netscape(c) for c in cookies if c.get("domain") and c.get("name"))
-    return cookies, "\n".join(netscape)
+            data = {"raw": str(c)}
+        cookies.append(data)
+    return cookies
 
 
 async def solve_flow(payload):
     browser = await get_browser()
     tab = await browser.get(payload.url)
+    try:
+        title = await wait_cf_pass(tab)
+        if "Just a moment" in title or not title:
+            raise RuntimeError("Cloudflare challenge tidak selesai dalam 30 detik")
 
-    title = await wait_cf_pass(tab)
-    if "Just a moment" in title or not title:
-        raise RuntimeError("Cloudflare challenge tidak selesai dalam 30 detik")
+        state = await page_state(tab)
+        token = ""
+        widget_found = state["hasWidget"]
 
-    state = await page_state(tab)
-    token = ""
-    widget_found = state["hasWidget"]
-
-    if widget_found:
-        token = await wait_turnstile_token(tab)
-    elif payload.sitekey:
-        widget_found = await inject_turnstile(tab, payload.sitekey)
         if widget_found:
             token = await wait_turnstile_token(tab)
+        elif payload.sitekey:
+            widget_found = await inject_turnstile(tab, payload.sitekey)
+            if widget_found:
+                token = await wait_turnstile_token(tab)
 
-    submitted = False
-    if payload.submit and widget_found:
-        has_submit = (await page_state(tab))["hasSubmit"]
-        if has_submit:
-            submitted = await click_submit(tab)
-            await asyncio.sleep(POST_SETTLE_SECONDS)
+        submitted = False
+        if payload.submit and widget_found:
+            has_submit = (await page_state(tab))["hasSubmit"]
+            if has_submit:
+                submitted = await click_submit(tab)
+                await asyncio.sleep(POST_SETTLE_SECONDS)
 
-    cookies, netscape = await collect_cookies(browser)
+        user_agent = ""
+        try:
+            user_agent = await tab.evaluate("navigator.userAgent")
+        except Exception:
+            pass
 
-    final_url = ""
-    try:
-        final_url = tab.url or ""
-    except Exception:
-        pass
+        all_cookies = await collect_cookies(browser)
+        try:
+            host = tab.url or payload.url
+            from urllib.parse import urlparse
+            host = urlparse(host).netloc.split(":")[0]
+        except Exception:
+            host = ""
+        cookies = [c for c in all_cookies if cookie_matches(c, host)] or all_cookies
+        netscape = ["# Netscape HTTP Cookie File"]
+        netscape.extend(to_netscape(c) for c in cookies if c.get("domain") and c.get("name"))
+        netscape = "\n".join(netscape)
 
-    return {
-        "success": True,
-        "title": title,
-        "token": token,
-        "sitekey_used": payload.sitekey,
-        "widget_found": widget_found,
-        "submitted": submitted,
-        "browser_mode": _browser_mode,
-        "cookies_count": len(cookies),
-        "cookies": cookies,
-        "netscape": netscape,
-        "final_url": final_url,
-    }
+        final_url = ""
+        try:
+            final_url = tab.url or ""
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "title": title,
+            "token": token,
+            "sitekey_used": payload.sitekey,
+            "widget_found": widget_found,
+            "submitted": submitted,
+            "browser_mode": _browser_mode,
+            "user_agent": user_agent,
+            "cookies_count": len(cookies),
+            "cookies": cookies,
+            "netscape": netscape,
+            "final_url": final_url,
+        }
+    finally:
+        try:
+            await tab.close()
+        except Exception:
+            pass
 
 
 @app.get("/")
@@ -260,7 +288,9 @@ async def health():
 @app.get("/api/diag")
 async def diag():
     import shutil
+    import socket
     import subprocess
+    import tempfile
 
     exe = (
         shutil.which("google-chrome-stable")
@@ -270,24 +300,51 @@ async def diag():
         or ""
     )
     result = {"exe": exe or None}
-    if exe:
+    if not exe:
+        return result
+
+    try:
+        r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20)
+        result["version"] = r.stdout.strip() or r.stderr.strip()[:500]
+    except Exception as e:
+        result["version_error"] = str(e)[:500]
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    with tempfile.TemporaryDirectory() as profile:
+        args = [
+            exe,
+            "--remote-allow-origins=*",
+            "--no-first-run",
+            "--no-service-autorun",
+            "--no-default-browser-check",
+            "--homepage=about:blank",
+            "--no-pings",
+            "--password-store=basic",
+            "--disable-infobars",
+            "--disable-breakpad",
+            "--disable-dev-shm-usage",
+            "--disable-session-crashed-bubble",
+            "--disable-search-engine-choice-screen",
+            "--user-data-dir=%s" % profile,
+            "--headless=new",
+            "--no-sandbox",
+            "--remote-debugging-port=%s" % port,
+            *BROWSER_ARGS,
+            "about:blank",
+        ]
         try:
-            r = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20)
-            result["version"] = r.stdout.strip() or r.stderr.strip()[:500]
+            r = subprocess.run(args, capture_output=True, text=True, timeout=20)
+            result["nodriver_like_rc"] = r.returncode
+            result["nodriver_like_stdout"] = (r.stdout or "")[:200]
+            result["nodriver_like_stderr"] = (r.stderr or "")[:1500]
+        except subprocess.TimeoutExpired as e:
+            result["nodriver_like_timeout"] = True
+            result["nodriver_like_stderr"] = ((e.stderr or b"").decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or ""))[:1500]
         except Exception as e:
-            result["version_error"] = str(e)[:500]
-        try:
-            r = subprocess.run(
-                [exe, "--headless", "--no-sandbox", "--disable-gpu", "--dump-dom", "about:blank"],
-                capture_output=True, text=True, timeout=30,
-            )
-            result["headless_rc"] = r.returncode
-            result["headless_stdout"] = (r.stdout or "")[:200]
-            result["headless_stderr"] = (r.stderr or "")[:1500]
-        except Exception as e:
-            result["headless_error"] = str(e)[:500]
-    else:
-        result["exe"] = None
+            result["nodriver_like_error"] = str(e)[:500]
     return result
 
 
