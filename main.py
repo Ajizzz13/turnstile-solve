@@ -429,92 +429,97 @@ async def diag():
     return result
 
 
+async def _with_retry(fn):
+    try:
+        return await asyncio.wait_for(fn(), timeout=FLOW_TIMEOUT)
+    except asyncio.TimeoutError:
+        await reset_browser()
+        return {"success": False, "error": "Timeout"}
+    except Exception as e:
+        err = str(e)
+        if "not found" in err or "Target" in err or "websocket" in err.lower() or "connection" in err.lower():
+            await reset_browser()
+            try:
+                return await asyncio.wait_for(fn(), timeout=FLOW_TIMEOUT)
+            except asyncio.TimeoutError:
+                return {"success": False, "error": "Timeout"}
+            except Exception as e2:
+                return {"success": False, "error": str(e2)}
+        return {"success": False, "error": err}
+
+
+async def _run_probe(payload):
+    browser = await get_browser()
+    tab = await browser.get(payload.url)
+    try:
+        title = await wait_cf_pass(tab)
+        raw = await tab.evaluate("""JSON.stringify((() => {
+            const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                const r = f.getBoundingClientRect();
+                return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, x: r.x, y: r.y, visible: !!(r.width && r.height)};
+            });
+            const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+            const scripts = [...document.scripts].map(s => (s.src||'').slice(0,90));
+            return {title: document.title, iframes: ifs, inputs, scripts, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha, htmlLen: document.documentElement.outerHTML.length};
+        })())""")
+        state = json.loads(raw) if raw else None
+        await asyncio.sleep(4)
+        raw2 = await tab.evaluate("""JSON.stringify((() => {
+            const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                const r = f.getBoundingClientRect();
+                return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
+            });
+            const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+            return {iframes: ifs, inputs, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha};
+        })())""")
+        state2 = json.loads(raw2) if raw2 else None
+        manual = None
+        try:
+            raw3 = await tab.evaluate("""JSON.stringify((() => {
+                const el = document.getElementById('recaptcha-element');
+                if (!el) return {error: 'no element'};
+                if (typeof window.turnstile === 'undefined') return {error: 'no turnstile api'};
+                window.__pToken = '';
+                const key = el.getAttribute('data-sitekey') || '';
+                try {
+                    window.turnstile.render(el, {sitekey: key, callback: (t) => { window.__pToken = t; }});
+                    return {rendered: true, key};
+                } catch (e) { return {rendered: false, err: String(e).slice(0,200)}; }
+            })())""")
+            manual = json.loads(raw3) if raw3 else None
+        except Exception:
+            pass
+        await asyncio.sleep(6)
+        raw4 = await tab.evaluate("""JSON.stringify((() => {
+            const ifs = [...document.querySelectorAll('iframe')].map(f => {
+                const r = f.getBoundingClientRect();
+                return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
+            });
+            const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
+            return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
+        })())""")
+        state3 = json.loads(raw4) if raw4 else None
+        return {"success": True, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3}
+    finally:
+        try:
+            await tab.close()
+        except Exception:
+            pass
+
+
 @app.post("/api/probe")
 async def probe_url(payload: URLPayload):
     async with _solve_lock:
-        browser = None
-        try:
-            browser = await get_browser()
-            tab = await browser.get(payload.url)
-            try:
-                title = await wait_cf_pass(tab)
-                raw = await tab.evaluate("""JSON.stringify((() => {
-                    const ifs = [...document.querySelectorAll('iframe')].map(f => {
-                        const r = f.getBoundingClientRect();
-                        return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, x: r.x, y: r.y, visible: !!(r.width && r.height)};
-                    });
-                    const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
-                    const scripts = [...document.scripts].map(s => (s.src||'').slice(0,90));
-                    return {title: document.title, iframes: ifs, inputs, scripts, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha, htmlLen: document.documentElement.outerHTML.length};
-                })())""")
-                state = json.loads(raw) if raw else None
-                await asyncio.sleep(4)
-                raw2 = await tab.evaluate("""JSON.stringify((() => {
-                    const ifs = [...document.querySelectorAll('iframe')].map(f => {
-                        const r = f.getBoundingClientRect();
-                        return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
-                    });
-                    const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
-                    return {iframes: ifs, inputs, hasTurnstile: typeof window.turnstile !== 'undefined', hasRecaptcha: !!window.grecaptcha};
-                })())""")
-                state2 = json.loads(raw2) if raw2 else None
-                manual = None
-                try:
-                    raw3 = await tab.evaluate("""JSON.stringify((() => {
-                        const el = document.getElementById('recaptcha-element');
-                        if (!el) return {error: 'no element'};
-                        if (typeof window.turnstile === 'undefined') return {error: 'no turnstile api'};
-                        window.__pToken = '';
-                        const key = el.getAttribute('data-sitekey') || '';
-                        try {
-                            window.turnstile.render(el, {sitekey: key, callback: (t) => { window.__pToken = t; }});
-                            return {rendered: true, key};
-                        } catch (e) { return {rendered: false, err: String(e).slice(0,200)}; }
-                    })())""")
-                    manual = json.loads(raw3) if raw3 else None
-                except Exception:
-                    pass
-                await asyncio.sleep(6)
-                raw4 = await tab.evaluate("""JSON.stringify((() => {
-                    const ifs = [...document.querySelectorAll('iframe')].map(f => {
-                        const r = f.getBoundingClientRect();
-                        return {src: (f.src||'').slice(0,80), w: r.width, h: r.height, visible: !!(r.width && r.height)};
-                    });
-                    const inputs = [...document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]')].map(i => ({name: i.name, len: (i.value||'').length}));
-                    return {iframes: ifs, inputs, token: (window.__pToken || '').slice(0, 40), tokenLen: (window.__pToken || '').length};
-                })())""")
-                state3 = json.loads(raw4) if raw4 else None
-                return {"success": True, "state": state, "state_after4s": state2, "manual_render": manual, "state_after_manual": state3}
-            finally:
-                try:
-                    await tab.close()
-                except Exception:
-                    pass
-        except Exception as e:
-            return {"success": False, "error": str(e)[:600]}
+        return await _with_retry(lambda: _run_probe(payload))
 
 
 @app.post("/api/resolve")
 async def resolve_url(payload: URLPayload):
     async with _solve_lock:
-        try:
-            return await asyncio.wait_for(solve_flow(SolvePayload(url=payload.url, submit=False)), timeout=FLOW_TIMEOUT)
-        except asyncio.TimeoutError:
-            await reset_browser()
-            return {"success": False, "error": "Timeout"}
-        except Exception as e:
-            await reset_browser()
-            return {"success": False, "error": str(e)}
+        return await _with_retry(lambda: solve_flow(SolvePayload(url=payload.url, submit=False)))
 
 
 @app.post("/api/solve")
 async def solve_url(payload: SolvePayload):
     async with _solve_lock:
-        try:
-            return await asyncio.wait_for(solve_flow(payload), timeout=FLOW_TIMEOUT)
-        except asyncio.TimeoutError:
-            await reset_browser()
-            return {"success": False, "error": "Timeout"}
-        except Exception as e:
-            await reset_browser()
-            return {"success": False, "error": str(e)}
+        return await _with_retry(lambda: solve_flow(payload))
