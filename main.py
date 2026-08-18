@@ -72,12 +72,14 @@ async def get_browser():
                     r = subprocess.run(
                         [exe_path, "--headless", "--no-sandbox", "--disable-dev-shm-usage",
                          "--enable-logging=stderr", "--dump-dom", "about:blank"],
-                        capture_output=True, text=True, timeout=30,
+                        capture_output=True, text=True, timeout=45,
                     )
-                    extra = f"manual_rc={r.returncode} stderr={r.stderr[:400]}"
+                    extra = f"manual_rc={r.returncode} stderr={r.stderr[-500:]}"
+                except subprocess.TimeoutExpired as te:
+                    extra = f"manual_TIMEOUT45s rc={(te.returncode)} out={(te.stdout or '')[-200:]} err={(te.stderr or '')[-500:]}"
                 except Exception as e2:
-                    extra = f"manual_exc={str(e2)[:120]}"
-                raise RuntimeError(f"BrowserStartFailed: {str(e)[:120]} | {extra}")
+                    extra = f"manual_exc={str(e2)[:200]}"
+                raise RuntimeError(f"BrowserStartFailed: {str(e)[:100]} | {extra}")
     return _browser
 
 
