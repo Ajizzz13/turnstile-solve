@@ -23,9 +23,11 @@ BROWSER_ARGS = [
     "--no-default-browser-check",
     "--disable-extensions",
     "--window-size=1280,720",
+    "--lang=en-US,en",
+    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
 ]
 
-CF_WAIT_SECONDS = 30
+CF_WAIT_SECONDS = 60
 TOKEN_WAIT_SECONDS = 25
 POST_SETTLE_SECONDS = 3
 FLOW_TIMEOUT = 75
