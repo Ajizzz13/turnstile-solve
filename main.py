@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import gc
 import json
 import os
@@ -326,6 +327,23 @@ async def execute_solve(payload: SolvePayload):
             ts_error = str(await tab.evaluate("window.__tsError || ''"))
         except Exception:
             pass
+        ts_info = ""
+        try:
+            ts_info = str(await tab.evaluate("""JSON.stringify({
+                hasTsApi: typeof turnstile !== 'undefined',
+                iframeCount: [...document.querySelectorAll('iframe')].filter(f => (f.src||'').includes('challenges.cloudflare.com')).length,
+                widgetHtml: (document.querySelector('.g-recaptcha,#recaptcha-element')?.innerHTML || '').slice(0, 300),
+                widgetRect: (() => { const el = document.querySelector('.g-recaptcha,#recaptcha-element'); if (!el) return null; const r = el.getBoundingClientRect(); return {w: r.width, h: r.height, x: r.x, y: r.y, display: getComputedStyle(el).display}; })()
+            })"""))
+        except Exception:
+            pass
+        screenshot = ""
+        try:
+            shot = await tab.save_screenshot()
+            if shot:
+                screenshot = base64.b64encode(shot).decode()[:300000]
+        except Exception:
+            pass
         final_url = ""
         try:
             final_url = str(tab.url or "")
@@ -348,6 +366,8 @@ async def execute_solve(payload: SolvePayload):
             "netscape": netscape,
             "final_url": final_url,
             "ts_error": ts_error,
+            "ts_info": ts_info,
+            "screenshot_b64": screenshot,
         }
     finally:
         if browser:
