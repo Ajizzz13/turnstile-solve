@@ -57,7 +57,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && echo y | camoufox fetch
+    && echo y | camoufox fetch \
+    && mkdir -p /home/appuser/.cache \
+    && mv /root/.cache/camoufox /home/appuser/.cache/ \
+    && chown -R appuser:appuser /home/appuser/.cache
 
 COPY . .
 
