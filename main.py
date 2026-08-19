@@ -2,12 +2,11 @@ import asyncio
 import base64
 import gc
 import json
-import shutil
 import traceback
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from camoufox.sync_api import Camoufox
+from patchright.sync_api import sync_playwright
 
 app = FastAPI()
 _solve_lock = asyncio.Lock()
@@ -16,6 +15,25 @@ CF_WAIT_SECONDS = 45
 TOKEN_WAIT_SECONDS = 35
 POST_SETTLE_SECONDS = 3
 FLOW_TIMEOUT = 120
+
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+BROWSER_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--mute-audio",
+    "--disable-blink-features=AutomationControlled",
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--window-position=2000,2000",
+]
 
 
 class SolvePayload(BaseModel):
@@ -31,9 +49,7 @@ def page_state(page):
             let val = '';
             for (const el of inputs) { if (el.value && el.value.length > 10) { val = el.value; break; } }
             const hasWidget = !!document.querySelector('.g-recaptcha, .cf-turnstile, #recaptcha-element, iframe[src*="challenges.cloudflare.com"]');
-            const w = document.querySelector('.g-recaptcha,#recaptcha-element');
-            const srIframe = w?.shadowRoot?.querySelector('iframe') || null;
-            const hasIframe = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]') || !!srIframe;
+            const hasIframe = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]');
             const hasSubmit = !!document.querySelector('button[type="submit"]');
             return { hasWidget, hasIframe, hasSubmit, val };
         })())"""))
@@ -45,8 +61,7 @@ def click_turnstile_checkbox(page):
     try:
         pos = json.loads(page.evaluate("""JSON.stringify((() => {
             const w = document.querySelector('.g-recaptcha,#recaptcha-element');
-            const f = w?.shadowRoot?.querySelector('iframe')
-                || [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
+            const f = [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
             if (f) {
                 const r = f.getBoundingClientRect();
                 return { x: r.x + 30, y: r.y + r.height / 2 };
@@ -174,8 +189,8 @@ def click_submit(page):
         return False
 
 
-def collect_cookies(page):
-    raw = page.context.cookies()
+def collect_cookies(context):
+    raw = context.cookies()
     cookies = []
     header_parts = []
     netscape = ["# Netscape HTTP Cookie File"]
@@ -211,9 +226,11 @@ def time_sleep(sec):
 
 def execute_solve(payload: SolvePayload):
     try:
-        with Camoufox(headless=True, os="linux") as browser:
-            page = browser.new_page()
-            page.goto(payload.url, wait_until="load", timeout=60000)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True, args=BROWSER_ARGS)
+            context = browser.new_context(user_agent=USER_AGENT, locale="en-US")
+            page = context.new_page()
+            page.goto(payload.url, wait_until="domcontentloaded", timeout=60000)
 
             title = wait_cf_pass(page)
             if "Just a moment" in title or not title:
@@ -245,7 +262,7 @@ def execute_solve(payload: SolvePayload):
                     time_sleep(POST_SETTLE_SECONDS)
 
             user_agent = page.evaluate("navigator.userAgent")
-            cookies, cookie_header, netscape = collect_cookies(page)
+            cookies, cookie_header, netscape = collect_cookies(context)
             ts_error = ""
             try:
                 ts_error = str(page.evaluate("window.__tsError || ''"))
@@ -256,9 +273,7 @@ def execute_solve(payload: SolvePayload):
                 ts_info = str(page.evaluate("""JSON.stringify({
                     hasTsApi: typeof turnstile !== 'undefined',
                     iframeCount: [...document.querySelectorAll('iframe')].filter(f => (f.src||'').includes('challenges.cloudflare.com')).length,
-                    shadowIframe: (() => { const w = document.querySelector('.g-recaptcha,#recaptcha-element'); const f = w?.shadowRoot?.querySelector('iframe'); return f ? (f.src||'').slice(0,120) : null; })(),
-                    widgetHtml: (document.querySelector('.g-recaptcha,#recaptcha-element')?.innerHTML || '').slice(0, 300),
-                    widgetRect: (() => { const el = document.querySelector('.g-recaptcha,#recaptcha-element'); if (!el) return null; const r = el.getBoundingClientRect(); return {w: r.width, h: r.height, x: r.x, y: r.y, display: getComputedStyle(el).display}; })()
+                    widgetHtml: (document.querySelector('.g-recaptcha,#recaptcha-element')?.innerHTML || '').slice(0, 300)
                 })"""))
             except Exception:
                 pass
@@ -308,7 +323,7 @@ def wait_turnstile_token_short(page):
 
 @app.get("/")
 async def health():
-    return {"status": "ok", "v": 4}
+    return {"status": "ok", "v": 5}
 
 
 @app.post("/api/solve")

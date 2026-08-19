@@ -38,17 +38,7 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
-    xvfb \
-    xauth \
-    libdbus-glib-1-2 \
-    libxt6 \
-    libbz2-1.0 \
-    libunwind8 \
     --no-install-recommends \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd -m -u 1000 appuser
@@ -57,10 +47,7 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
-    && echo y | camoufox fetch \
-    && mkdir -p /home/appuser/.cache \
-    && mv /root/.cache/camoufox /home/appuser/.cache/ \
-    && chown -R appuser:appuser /home/appuser/.cache
+    && python -m patchright install chromium
 
 COPY . .
 
@@ -69,4 +56,4 @@ RUN chown -R appuser:appuser /app
 USER appuser
 ENV HOME=/home/appuser
 
-CMD xvfb-run -a uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}

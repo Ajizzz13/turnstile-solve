@@ -1,7 +1,4 @@
 fastapi
 uvicorn
-nodriver
 pydantic
-DrissionPage
-camoufox
-playwright
+patchright
