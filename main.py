@@ -176,6 +176,7 @@ async def inject_turnstile(tab, sitekey):
 
 async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
     clicked = False
+    exec_called = False
     last_iframe = False
     for i in range(max_seconds):
         await asyncio.sleep(1)
@@ -188,6 +189,19 @@ async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
                 clicked = await click_turnstile_checkbox(tab) or clicked
         elif not clicked and i % 3 == 0:
             clicked = await click_turnstile_checkbox(tab)
+        if not exec_called and i >= 5:
+            try:
+                await tab.evaluate("""(() => {
+                    const inp = document.querySelector('input[name="cf-turnstile-response"], input[name="g-recaptcha-response"]');
+                    const id = inp?.id ? inp.id.replace('_response', '') : null;
+                    if (id && typeof turnstile !== 'undefined') {
+                        try { turnstile.execute(id); } catch (e) { window.__tsError = 'exec: ' + String(e); }
+                    }
+                    return id;
+                })()""")
+                exec_called = True
+            except Exception:
+                pass
         try:
             token = await tab.evaluate("window.__tsToken || ''")
             if token:
