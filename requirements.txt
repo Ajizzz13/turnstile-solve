@@ -3,3 +3,5 @@ uvicorn
 nodriver
 pydantic
 DrissionPage
+camoufox
+playwright

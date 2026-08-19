@@ -2,43 +2,20 @@ import asyncio
 import base64
 import gc
 import json
-import os
 import shutil
-import subprocess
 import traceback
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import nodriver as uc
-from nodriver import cdp
+from camoufox.sync_api import Camoufox
 
 app = FastAPI()
 _solve_lock = asyncio.Lock()
 
-HEADLESS = os.environ.get("HEADLESS", "0") == "1"
-
-BROWSER_ARGS = [
-    "--no-sandbox",
-    "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-gpu",
-    "--no-first-run",
-    "--no-default-browser-check",
-    "--disable-extensions",
-    "--mute-audio",
-    "--no-zygote",
-    "--renderer-process-limit=1",
-    "--disable-site-isolation-trials",
-    "--js-flags=--max-old-space-size=128",
-    "--window-size=1280,720",
-    "--lang=en-US,en",
-    "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
-]
-
 CF_WAIT_SECONDS = 45
 TOKEN_WAIT_SECONDS = 35
 POST_SETTLE_SECONDS = 3
-FLOW_TIMEOUT = 110
+FLOW_TIMEOUT = 120
 
 
 class SolvePayload(BaseModel):
@@ -47,19 +24,9 @@ class SolvePayload(BaseModel):
     submit: bool = True
 
 
-def find_chrome_path():
-    return (
-        shutil.which("google-chrome-stable")
-        or shutil.which("google-chrome")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or "/usr/bin/google-chrome-stable"
-    )
-
-
-async def get_page_state(tab):
+def page_state(page):
     try:
-        raw = await tab.evaluate("""JSON.stringify((() => {
+        return json.loads(page.evaluate("""JSON.stringify((() => {
             const inputs = document.querySelectorAll('input[name="g-recaptcha-response"], input[name="cf-turnstile-response"]');
             let val = '';
             for (const el of inputs) { if (el.value && el.value.length > 10) { val = el.value; break; } }
@@ -69,15 +36,14 @@ async def get_page_state(tab):
             const hasIframe = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]') || !!srIframe;
             const hasSubmit = !!document.querySelector('button[type="submit"]');
             return { hasWidget, hasIframe, hasSubmit, val };
-        })())""")
-        return json.loads(raw) if raw else {"hasWidget": False, "hasIframe": False, "hasSubmit": False, "val": ""}
+        })())"""))
     except Exception:
         return {"hasWidget": False, "hasIframe": False, "hasSubmit": False, "val": ""}
 
 
-async def click_turnstile_checkbox(tab):
+def click_turnstile_checkbox(page):
     try:
-        raw = await tab.evaluate("""JSON.stringify((() => {
+        pos = json.loads(page.evaluate("""JSON.stringify((() => {
             const w = document.querySelector('.g-recaptcha,#recaptcha-element');
             const f = w?.shadowRoot?.querySelector('iframe')
                 || [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
@@ -90,33 +56,32 @@ async def click_turnstile_checkbox(tab):
                 return { x: r.x + 30, y: r.y + r.height / 2 };
             }
             return null;
-        })())""")
-        pos = json.loads(raw) if raw else None
+        })())"""))
         if pos:
-            await tab.mouse.click(pos["x"], pos["y"])
+            page.mouse.click(pos["x"], pos["y"])
             return True
     except Exception:
         pass
     return False
 
 
-async def wait_cf_pass(tab):
+def wait_cf_pass(page):
     title = ""
     clicked = False
     for i in range(CF_WAIT_SECONDS):
-        await asyncio.sleep(1)
+        time_sleep(1)
         try:
-            title = await tab.evaluate("document.title")
+            title = page.title()
         except Exception:
             continue
         if title and "Just a moment" not in str(title):
             break
         if not clicked and i % 3 == 0:
-            clicked = await click_turnstile_checkbox(tab)
+            clicked = click_turnstile_checkbox(page)
     return str(title) if title else ""
 
 
-async def inject_turnstile(tab, sitekey):
+def inject_turnstile(page, sitekey):
     script = f"""
         (() => {{
             if (window.__tsToken !== undefined) return;
@@ -148,18 +113,6 @@ async def inject_turnstile(tab, sitekey):
                         callback: setToken,
                         'error-callback': () => {{ window.__tsError = 'error-callback'; }}
                     }});
-                    setTimeout(() => {{
-                        if (!window.__tsToken) {{
-                            try {{
-                                turnstile.render(el, {{
-                                    sitekey: {json.dumps(sitekey)},
-                                    appearance: 'execute',
-                                    callback: setToken,
-                                    'error-callback': () => {{ window.__tsError = 'execute-error'; }}
-                                }});
-                            }} catch (e) {{ window.__tsError = 'execute-exc: ' + String(e); }}
-                        }}
-                    }}, 4000);
                 }} catch (e) {{
                     window.__tsError = String(e);
                 }}
@@ -168,30 +121,28 @@ async def inject_turnstile(tab, sitekey):
         }})()
     """
     try:
-        await tab.evaluate(script)
+        page.evaluate(script)
         return True
     except Exception:
         return False
 
 
-async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
+def wait_turnstile_token(page):
     clicked = False
     exec_called = False
-    last_iframe = False
-    for i in range(max_seconds):
-        await asyncio.sleep(1)
-        state = await get_page_state(tab)
+    for i in range(TOKEN_WAIT_SECONDS):
+        time_sleep(1)
+        state = page_state(page)
         if state["val"]:
             return state["val"]
         if state["hasIframe"]:
-            last_iframe = True
             if not clicked or i % 2 == 0:
-                clicked = await click_turnstile_checkbox(tab) or clicked
+                clicked = click_turnstile_checkbox(page) or clicked
         elif not clicked and i % 3 == 0:
-            clicked = await click_turnstile_checkbox(tab)
+            clicked = click_turnstile_checkbox(page)
         if not exec_called and i >= 5:
             try:
-                await tab.evaluate("""(() => {
+                page.evaluate("""(() => {
                     const inp = document.querySelector('input[name="cf-turnstile-response"], input[name="g-recaptcha-response"]');
                     const id = inp?.id ? inp.id.replace('_response', '') : null;
                     if (id && typeof turnstile !== 'undefined') {
@@ -203,7 +154,7 @@ async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
             except Exception:
                 pass
         try:
-            token = await tab.evaluate("window.__tsToken || ''")
+            token = page.evaluate("window.__tsToken || ''")
             if token:
                 return token
         except Exception:
@@ -211,9 +162,9 @@ async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
     return ""
 
 
-async def click_submit(tab):
+def click_submit(page):
     try:
-        return await tab.evaluate("""(() => {
+        return page.evaluate("""(() => {
             const b = document.querySelector('button[type="submit"]');
             if (!b) return false;
             b.click();
@@ -223,203 +174,150 @@ async def click_submit(tab):
         return False
 
 
-def sanitize_cookie(c):
-    name = str(getattr(c, "name", "") or (c.get("name", "") if isinstance(c, dict) else ""))
-    value = str(getattr(c, "value", "") or (c.get("value", "") if isinstance(c, dict) else ""))
-    domain = str(getattr(c, "domain", "") or (c.get("domain", "") if isinstance(c, dict) else ""))
-    path = str(getattr(c, "path", "/") or (c.get("path", "/") if isinstance(c, dict) else "/"))
-    expires = getattr(c, "expires", 0) or (c.get("expires", 0) if isinstance(c, dict) else 0)
-    try:
-        expires = int(expires)
-    except Exception:
-        expires = 0
-    http_only = bool(getattr(c, "http_only", False) or (c.get("httpOnly", False) if isinstance(c, dict) else False))
-    secure = bool(getattr(c, "secure", False) or (c.get("secure", False) if isinstance(c, dict) else False))
-    return {
-        "name": name,
-        "value": value,
-        "domain": domain,
-        "path": path,
-        "expires": expires,
-        "httpOnly": http_only,
-        "secure": secure,
-    }
-
-
-async def collect_cookies(browser):
-    raw = await browser.cookies.get_all()
+def collect_cookies(page):
+    raw = page.context.cookies()
     cookies = []
     header_parts = []
     netscape = ["# Netscape HTTP Cookie File"]
-    for item in raw:
-        c = sanitize_cookie(item)
-        if c["name"] and c["value"] is not None:
-            cookies.append(c)
-            header_parts.append(f"{c['name']}={c['value']}")
-            prefix = "#HttpOnly_" if c["httpOnly"] else ""
-            sec_flag = "TRUE" if c["secure"] else "FALSE"
-            netscape.append(f"{prefix}{c['domain']}\tTRUE\t{c['path']}\t{sec_flag}\t{c['expires']}\t{c['name']}\t{c['value']}")
+    for c in raw:
+        name = str(c.get("name", "") or "")
+        value = str(c.get("value", "") or "")
+        if not name or value is None:
+            continue
+        domain = str(c.get("domain", "") or "")
+        path = str(c.get("path", "/") or "/")
+        expires = c.get("expires", 0) or 0
+        try:
+            expires = int(expires)
+        except Exception:
+            expires = 0
+        http_only = bool(c.get("httpOnly", False))
+        secure = bool(c.get("secure", False))
+        cookies.append({
+            "name": name, "value": value, "domain": domain, "path": path,
+            "expires": expires, "httpOnly": http_only, "secure": secure,
+        })
+        header_parts.append(f"{name}={value}")
+        prefix = "#HttpOnly_" if http_only else ""
+        sec_flag = "TRUE" if secure else "FALSE"
+        netscape.append(f"{prefix}{domain}\tTRUE\t{path}\t{sec_flag}\t{expires}\t{name}\t{value}")
     return cookies, "; ".join(header_parts), "\n".join(netscape)
 
 
-def chrome_probe(exe_path):
-    evidence = ""
-    try:
-        p = subprocess.Popen(
-            [exe_path, "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage",
-             "--enable-logging=stderr", "--v=1", "about:blank"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env={**os.environ, "DISPLAY": os.environ.get("DISPLAY", ":99")},
-        )
-        try:
-            rc = p.wait(timeout=20)
-            evidence = f"probe_exit={rc}"
-        except subprocess.TimeoutExpired:
-            p.kill()
-            evidence = "probe_ALIVE_20s"
-        out, err = p.communicate(timeout=10)
-        lines = [l for l in (err or "").splitlines()
-                 if any(k in l for k in ("FATAL", "ERROR", "GL", "GPU", "X11", "Xlib", "sandbox", "fontconfig", "dbus", "zygote", "shm", "memfd"))]
-        evidence += f" lines={len(lines)}"
-        evidence += " || " + " ;; ".join(lines[-12:])
-    except Exception as e:
-        evidence = f"probe_exc={str(e)[:200]}"
-    try:
-        r = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
-        chrome_lines = [l for l in r.stdout.splitlines() if "chrome" in l]
-        evidence += f" || chrome_procs={len(chrome_lines)}"
-    except Exception:
-        pass
-    try:
-        r = subprocess.run(["ls", "-la", "/tmp/.X11-unix"], capture_output=True, text=True, timeout=5)
-        evidence += f" || X11={(r.stdout or '')[-120:]}"
-    except Exception:
-        pass
-    return evidence
+def time_sleep(sec):
+    import time
+    time.sleep(sec)
 
 
-async def execute_solve(payload: SolvePayload):
-    browser = None
+def execute_solve(payload: SolvePayload):
     try:
-        exe_path = find_chrome_path()
-        try:
-            for attempt in range(3):
+        with Camoufox(headless=True, os="linux") as browser:
+            page = browser.new_page()
+            page.goto(payload.url, wait_until="load", timeout=60000)
+
+            title = wait_cf_pass(page)
+            if "Just a moment" in title or not title:
+                raise RuntimeError("Gagal melewati halaman verifikasi awal Cloudflare (Just a moment...)")
+
+            state = page_state(page)
+            token = ""
+            widget_found = state["hasWidget"]
+            injected = False
+
+            sitekey = payload.sitekey
+            if not sitekey:
                 try:
-                    browser = await uc.start(
-                        headless=HEADLESS,
-                        no_sandbox=True,
-                        browser_executable_path=exe_path,
-                        browser_args=BROWSER_ARGS,
-                    )
-                    break
+                    sitekey = str(page.evaluate("document.querySelector('.g-recaptcha,#recaptcha-element')?.getAttribute('data-sitekey') || ''"))
                 except Exception:
-                    if attempt < 2:
-                        await asyncio.sleep(2)
-                    else:
-                        raise
-        except Exception as e:
-            raise RuntimeError(f"{str(e)[:80]} || {chrome_probe(exe_path)}")
+                    sitekey = ""
 
-        tab = await browser.get(payload.url)
+            if widget_found:
+                token = wait_turnstile_token_short(page)
+            if not token and sitekey:
+                injected = inject_turnstile(page, sitekey)
+                if injected:
+                    token = wait_turnstile_token(page)
 
-        title = await wait_cf_pass(tab)
-        if "Just a moment" in title or not title:
-            raise RuntimeError("Gagal melewati halaman verifikasi awal Cloudflare (Just a moment...)")
+            submitted = False
+            if payload.submit and (widget_found or injected):
+                if page_state(page)["hasSubmit"]:
+                    submitted = click_submit(page)
+                    time_sleep(POST_SETTLE_SECONDS)
 
-        state = await get_page_state(tab)
-        token = ""
-        widget_found = state["hasWidget"]
-        injected = False
-
-        sitekey = payload.sitekey
-        if not sitekey:
+            user_agent = page.evaluate("navigator.userAgent")
+            cookies, cookie_header, netscape = collect_cookies(page)
+            ts_error = ""
             try:
-                sitekey = str(await tab.evaluate("document.querySelector('.g-recaptcha,#recaptcha-element')?.getAttribute('data-sitekey') || ''"))
-            except Exception:
-                sitekey = ""
-
-        if widget_found:
-            token = await wait_turnstile_token(tab, max_seconds=5)
-        if not token and sitekey:
-            injected = await inject_turnstile(tab, sitekey)
-            if injected:
-                token = await wait_turnstile_token(tab)
-
-        submitted = False
-        if payload.submit and (widget_found or injected):
-            if (await get_page_state(tab))["hasSubmit"]:
-                submitted = await click_submit(tab)
-                await asyncio.sleep(POST_SETTLE_SECONDS)
-
-        user_agent = await tab.evaluate("navigator.userAgent")
-        cookies, cookie_header, netscape = await collect_cookies(browser)
-        ts_error = ""
-        try:
-            ts_error = str(await tab.evaluate("window.__tsError || ''"))
-        except Exception:
-            pass
-        ts_info = ""
-        try:
-            ts_info = str(await tab.evaluate("""JSON.stringify({
-                hasTsApi: typeof turnstile !== 'undefined',
-                iframeCount: [...document.querySelectorAll('iframe')].filter(f => (f.src||'').includes('challenges.cloudflare.com')).length,
-                shadowIframe: (() => { const w = document.querySelector('.g-recaptcha,#recaptcha-element'); const f = w?.shadowRoot?.querySelector('iframe'); return f ? (f.src||'').slice(0,120) : null; })(),
-                widgetHtml: (document.querySelector('.g-recaptcha,#recaptcha-element')?.innerHTML || '').slice(0, 300),
-                widgetRect: (() => { const el = document.querySelector('.g-recaptcha,#recaptcha-element'); if (!el) return null; const r = el.getBoundingClientRect(); return {w: r.width, h: r.height, x: r.x, y: r.y, display: getComputedStyle(el).display}; })()
-            })"""))
-        except Exception:
-            pass
-        screenshot = ""
-        try:
-            shot = await tab.save_screenshot()
-            if shot:
-                screenshot = base64.b64encode(shot).decode()[:300000]
-        except Exception:
-            pass
-        final_url = ""
-        try:
-            final_url = str(tab.url or "")
-        except Exception:
-            pass
-
-        return {
-            "success": True,
-            "title": str(title),
-            "token": str(token),
-            "sitekey_used": str(sitekey),
-            "widget_found": bool(widget_found),
-            "injected": bool(injected),
-            "iframe_final": (await get_page_state(tab))["hasIframe"],
-            "submitted": bool(submitted),
-            "user_agent": str(user_agent),
-            "cookie_header": cookie_header,
-            "cookies_count": len(cookies),
-            "cookies": cookies,
-            "netscape": netscape,
-            "final_url": final_url,
-            "ts_error": ts_error,
-            "ts_info": ts_info,
-            "screenshot_b64": screenshot,
-        }
-    finally:
-        if browser:
-            try:
-                browser.stop()
+                ts_error = str(page.evaluate("window.__tsError || ''"))
             except Exception:
                 pass
+            ts_info = ""
+            try:
+                ts_info = str(page.evaluate("""JSON.stringify({
+                    hasTsApi: typeof turnstile !== 'undefined',
+                    iframeCount: [...document.querySelectorAll('iframe')].filter(f => (f.src||'').includes('challenges.cloudflare.com')).length,
+                    shadowIframe: (() => { const w = document.querySelector('.g-recaptcha,#recaptcha-element'); const f = w?.shadowRoot?.querySelector('iframe'); return f ? (f.src||'').slice(0,120) : null; })(),
+                    widgetHtml: (document.querySelector('.g-recaptcha,#recaptcha-element')?.innerHTML || '').slice(0, 300),
+                    widgetRect: (() => { const el = document.querySelector('.g-recaptcha,#recaptcha-element'); if (!el) return null; const r = el.getBoundingClientRect(); return {w: r.width, h: r.height, x: r.x, y: r.y, display: getComputedStyle(el).display}; })()
+                })"""))
+            except Exception:
+                pass
+            screenshot = ""
+            try:
+                shot = page.screenshot()
+                if shot:
+                    screenshot = base64.b64encode(shot).decode()[:300000]
+            except Exception:
+                pass
+
+            return {
+                "success": True,
+                "title": str(title),
+                "token": str(token),
+                "sitekey_used": str(sitekey),
+                "widget_found": bool(widget_found),
+                "injected": bool(injected),
+                "submitted": bool(submitted),
+                "user_agent": str(user_agent),
+                "cookie_header": cookie_header,
+                "cookies_count": len(cookies),
+                "cookies": cookies,
+                "netscape": netscape,
+                "ts_error": ts_error,
+                "ts_info": ts_info,
+                "screenshot_b64": screenshot,
+            }
+    finally:
         gc.collect()
+
+
+def wait_turnstile_token_short(page):
+    for _ in range(5):
+        time_sleep(1)
+        state = page_state(page)
+        if state["val"]:
+            return state["val"]
+        try:
+            token = page.evaluate("window.__tsToken || ''")
+            if token:
+                return token
+        except Exception:
+            pass
+    return ""
 
 
 @app.get("/")
 async def health():
-    return {"status": "ok", "v": 3}
+    return {"status": "ok", "v": 4}
 
 
 @app.post("/api/solve")
 async def solve_url(payload: SolvePayload):
     async with _solve_lock:
         try:
-            result = await asyncio.wait_for(execute_solve(payload), timeout=FLOW_TIMEOUT)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(execute_solve, payload), timeout=FLOW_TIMEOUT
+            )
             return JSONResponse(status_code=200, content=result)
         except asyncio.TimeoutError:
             gc.collect()

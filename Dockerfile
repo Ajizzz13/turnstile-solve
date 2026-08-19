@@ -40,6 +40,10 @@ RUN apt-get update && apt-get install -y \
     xdg-utils \
     xvfb \
     xauth \
+    libdbus-glib-1-2 \
+    libxt6 \
+    libbz2-1.0 \
+    libunwind8 \
     --no-install-recommends \
     && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
@@ -52,7 +56,8 @@ RUN useradd -m -u 1000 appuser
 WORKDIR /app
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && camoufox fetch --confirm-download
 
 COPY . .
 
