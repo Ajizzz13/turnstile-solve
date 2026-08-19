@@ -35,7 +35,7 @@ BROWSER_ARGS = [
 ]
 
 CF_WAIT_SECONDS = 45
-TOKEN_WAIT_SECONDS = 25
+TOKEN_WAIT_SECONDS = 35
 POST_SETTLE_SECONDS = 3
 FLOW_TIMEOUT = 110
 
@@ -165,12 +165,17 @@ async def inject_turnstile(tab, sitekey):
 
 async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
     clicked = False
-    for _ in range(max_seconds):
+    last_iframe = False
+    for i in range(max_seconds):
         await asyncio.sleep(1)
         state = await get_page_state(tab)
         if state["val"]:
             return state["val"]
-        if not clicked:
+        if state["hasIframe"]:
+            last_iframe = True
+            if not clicked or i % 2 == 0:
+                clicked = await click_turnstile_checkbox(tab) or clicked
+        elif not clicked and i % 3 == 0:
             clicked = await click_turnstile_checkbox(tab)
         try:
             token = await tab.evaluate("window.__tsToken || ''")
@@ -334,6 +339,7 @@ async def execute_solve(payload: SolvePayload):
             "sitekey_used": str(payload.sitekey),
             "widget_found": bool(widget_found),
             "injected": bool(injected),
+            "iframe_final": (await get_page_state(tab))["hasIframe"],
             "submitted": bool(submitted),
             "user_agent": str(user_agent),
             "cookie_header": cookie_header,
