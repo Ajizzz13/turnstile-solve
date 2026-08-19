@@ -331,10 +331,17 @@ async def execute_solve(payload: SolvePayload):
         widget_found = state["hasWidget"]
         injected = False
 
+        sitekey = payload.sitekey
+        if not sitekey:
+            try:
+                sitekey = str(await tab.evaluate("document.querySelector('.g-recaptcha,#recaptcha-element')?.getAttribute('data-sitekey') || ''"))
+            except Exception:
+                sitekey = ""
+
         if widget_found:
             token = await wait_turnstile_token(tab, max_seconds=5)
-        if not token and payload.sitekey:
-            injected = await inject_turnstile(tab, payload.sitekey)
+        if not token and sitekey:
+            injected = await inject_turnstile(tab, sitekey)
             if injected:
                 token = await wait_turnstile_token(tab)
 
@@ -379,7 +386,7 @@ async def execute_solve(payload: SolvePayload):
             "success": True,
             "title": str(title),
             "token": str(token),
-            "sitekey_used": str(payload.sitekey),
+            "sitekey_used": str(sitekey),
             "widget_found": bool(widget_found),
             "injected": bool(injected),
             "iframe_final": (await get_page_state(tab))["hasIframe"],
