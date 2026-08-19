@@ -163,9 +163,9 @@ async def inject_turnstile(tab, sitekey):
         return False
 
 
-async def wait_turnstile_token(tab):
+async def wait_turnstile_token(tab, max_seconds=TOKEN_WAIT_SECONDS):
     clicked = False
-    for _ in range(TOKEN_WAIT_SECONDS):
+    for _ in range(max_seconds):
         await asyncio.sleep(1)
         state = await get_page_state(tab)
         if state["val"]:
@@ -302,8 +302,8 @@ async def execute_solve(payload: SolvePayload):
         injected = False
 
         if widget_found:
-            token = await wait_turnstile_token(tab)
-        elif payload.sitekey:
+            token = await wait_turnstile_token(tab, max_seconds=5)
+        if not token and payload.sitekey:
             injected = await inject_turnstile(tab, payload.sitekey)
             if injected:
                 token = await wait_turnstile_token(tab)
