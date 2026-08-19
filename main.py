@@ -64,7 +64,9 @@ async def get_page_state(tab):
             let val = '';
             for (const el of inputs) { if (el.value && el.value.length > 10) { val = el.value; break; } }
             const hasWidget = !!document.querySelector('.g-recaptcha, .cf-turnstile, #recaptcha-element, iframe[src*="challenges.cloudflare.com"]');
-            const hasIframe = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+            const w = document.querySelector('.g-recaptcha,#recaptcha-element');
+            const srIframe = w?.shadowRoot?.querySelector('iframe') || null;
+            const hasIframe = !!document.querySelector('iframe[src*="challenges.cloudflare.com"]') || !!srIframe;
             const hasSubmit = !!document.querySelector('button[type="submit"]');
             return { hasWidget, hasIframe, hasSubmit, val };
         })())""")
@@ -76,10 +78,18 @@ async def get_page_state(tab):
 async def click_turnstile_checkbox(tab):
     try:
         raw = await tab.evaluate("""JSON.stringify((() => {
-            const f = [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
-            if (!f) return null;
-            const r = f.getBoundingClientRect();
-            return { x: r.x + 30, y: r.y + r.height / 2 };
+            const w = document.querySelector('.g-recaptcha,#recaptcha-element');
+            const f = w?.shadowRoot?.querySelector('iframe')
+                || [...document.querySelectorAll('iframe')].find(e => (e.src || '').includes('challenges.cloudflare.com'));
+            if (f) {
+                const r = f.getBoundingClientRect();
+                return { x: r.x + 30, y: r.y + r.height / 2 };
+            }
+            if (w) {
+                const r = w.getBoundingClientRect();
+                return { x: r.x + 30, y: r.y + r.height / 2 };
+            }
+            return null;
         })())""")
         pos = json.loads(raw) if raw else None
         if pos:
@@ -332,6 +342,7 @@ async def execute_solve(payload: SolvePayload):
             ts_info = str(await tab.evaluate("""JSON.stringify({
                 hasTsApi: typeof turnstile !== 'undefined',
                 iframeCount: [...document.querySelectorAll('iframe')].filter(f => (f.src||'').includes('challenges.cloudflare.com')).length,
+                shadowIframe: (() => { const w = document.querySelector('.g-recaptcha,#recaptcha-element'); const f = w?.shadowRoot?.querySelector('iframe'); return f ? (f.src||'').slice(0,120) : null; })(),
                 widgetHtml: (document.querySelector('.g-recaptcha,#recaptcha-element')?.innerHTML || '').slice(0, 300),
                 widgetRect: (() => { const el = document.querySelector('.g-recaptcha,#recaptcha-element'); if (!el) return null; const r = el.getBoundingClientRect(); return {w: r.width, h: r.height, x: r.x, y: r.y, display: getComputedStyle(el).display}; })()
             })"""))
