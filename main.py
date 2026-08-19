@@ -227,7 +227,7 @@ def time_sleep(sec):
 def execute_solve(payload: SolvePayload):
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=BROWSER_ARGS)
+            browser = p.chromium.launch(headless=False, args=BROWSER_ARGS)
             context = browser.new_context(user_agent=USER_AGENT, locale="en-US")
             page = context.new_page()
             page.goto(payload.url, wait_until="domcontentloaded", timeout=60000)

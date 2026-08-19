@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y \
     libxss1 \
     libxtst6 \
     xdg-utils \
+    xvfb \
+    xauth \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -56,4 +58,4 @@ RUN chown -R appuser:appuser /app
 USER appuser
 ENV HOME=/home/appuser
 
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
+CMD xvfb-run -a uvicorn main:app --host 0.0.0.0 --port ${PORT:-10000}
